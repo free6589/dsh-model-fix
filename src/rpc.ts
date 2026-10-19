@@ -1,5 +1,5 @@
 /** RPC 端点：forceUpdate / resetModels / restoreModels 三个写回端点（共用事件流守卫互斥）+ reportLocale 语言上报；
- * 验证与探测档位的进度各开一条 `connection.fetch` exact 路由。
+ * 验证、探测档位与能力探测的进度各开一条 `connection.fetch` exact 路由。
  * 路由自注册而非宿主 `connection.rpc.handle`（后者在 connection 服务 ctx 上求值 `owner.webServer`，而 connection 不再注入它必抛，详见 docs/decisions.md「写回端点」） */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -8,7 +8,7 @@ import type { ConnectionRpcResult, HostConnectionService } from '@deepseek-ai/ds
 import type {} from '@deepseek-ai/dsh-llm'
 import type { WebServer } from '@deepseek-ai/dsh-host-webserver'
 import {
-    ENDPOINT_FORCE_UPDATE, ENDPOINT_REPORT_LOCALE,
+    CAPS_STREAM_ROUTE, ENDPOINT_FORCE_UPDATE, ENDPOINT_REPORT_LOCALE,
     ENDPOINT_RESET_MODELS, ENDPOINT_RESTORE_MODELS,
     PLUGIN_NAME, PLUGIN_NS, PROBE_STREAM_ROUTE, VERIFY_STREAM_ROUTE,
 } from '@/shared/constants'
@@ -20,6 +20,7 @@ import { fix } from '@/fix'
 import { reportLocale } from '@/effort-name'
 import { endIgnoreAll, isIgnoreAll, startIgnoreAll } from '@/guard'
 import { probeAndFill } from '@/probe'
+import { probeCapabilities } from '@/probe-caps'
 import { resetModels } from '@/reset'
 import { restoreModels } from '@/restore'
 import { verifyModels } from '@/verify'
@@ -108,10 +109,18 @@ export function installRpc(ctx: Context): void {
                 requestBody: 'buffered',
                 fetch: progressStreamFetch((payload, options) => probeAndFill(ctx, ctx.llm, payload, options), true),
             })
+            // 能力探测的流同样写配置（只动 input 图片模态），与探测档位共用守卫闸；wire 级探测不需要 llm
+            const disposeCaps = connection.fetch.register({
+                path: CAPS_STREAM_ROUTE,
+                methods: ['POST'],
+                requestBody: 'buffered',
+                fetch: progressStreamFetch((payload, options) => probeCapabilities(ctx, payload, options), true),
+            })
             return () => {
                 disposeChannel()
                 void disposeStream() // fetch.register 的 disposer 是异步的，effect 只负责同步调用它
                 void disposeProbe()
+                void disposeCaps()
             }
         }, `${PLUGIN_NAME}: rpc`)
     })
@@ -119,7 +128,7 @@ export function installRpc(ctx: Context): void {
 
 /** 进度流的 Fetch 实现：请求体是模型清单，响应以 SSE 分帧。
  * 走 `connection.fetch.register` 而非 `webServer.register`：前者代管信任围栏、浏览器认证与客户端断开 → `request.signal`。
- * 验证与探测档位共用此实现（线上形状同形，只有执行器不同）；`needsIdleGuard` 只给写配置的那条流（与写回端点互斥，已开即拒 409）。
+ * 验证、探测档位与能力探测共用此实现（线上形状同形，只有执行器不同）；`needsIdleGuard` 只给写配置的两条流（与写回端点互斥，已开即拒 409）。
  * 执行器抛错收于 `failed` 终帧，客户端已中止则不发（停止不是失败） */
 export function progressStreamFetch(
     run: ProgressRunner,

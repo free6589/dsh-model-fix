@@ -1,18 +1,20 @@
-/** 浏览器半调 Node 半的唯一出口：三个 channel RPC 写回端点、一条语言上报与两条进度流的读流。
- * 收在一处是因为它们同源——channel 字面量、endpoint 名、两条流各自的载荷形状都与 Node 半一一对应。卡片只消费本文件产出的 `RpcCarrier`，自己不发起请求 */
+/** 浏览器半调 Node 半的唯一出口：三个 channel RPC 写回端点、一条语言上报与三条进度流的读流。
+ * 收在一处是因为它们同源——channel 字面量、endpoint 名、三条流各自的载荷形状都与 Node 半一一对应。卡片只消费本文件产出的 `RpcCarrier`，自己不发起请求 */
 
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client'
 // channel RPC 的结果信封
 import type { ConnectionRpcResult } from '@deepseek-ai/dsh-client-connection'
 import {
+    CAPS_STREAM_URL,
     ENDPOINT_FORCE_UPDATE, ENDPOINT_REPORT_LOCALE, ENDPOINT_RESET_MODELS,
     ENDPOINT_RESTORE_MODELS, PLUGIN_NS, PROBE_STREAM_URL, VERIFY_STREAM_URL, WRITEBACK_MS,
 } from '@/shared/constants'
+import type { CapId } from '@/shared/cap-probe'
 import { decodeProgressFrame } from '@/shared/verify-progress'
 import type { VerifyProgressUpdate, VerifySummary } from '@/shared/verify-progress'
 import type { VerifyTarget } from '@/client/model'
 
-/** 浏览器半经本文件调 Node 半的调用面：三个写回端点（各带 `WRITEBACK_MS` 等待上限）、语言上报与两条诊断链的读流 */
+/** 浏览器半经本文件调 Node 半的调用面：三个写回端点（各带 `WRITEBACK_MS` 等待上限）、语言上报与三条诊断链的读流 */
 export interface RpcCarrier {
     /** 强制更新 RPC：channel 与端点在入口拼好，卡片只消费结果 */
     forceUpdate: () => Promise<ConnectionRpcResult<unknown>>
@@ -32,6 +34,14 @@ export interface RpcCarrier {
     probeEfforts: (
         models: readonly VerifyTarget[],
         flags: { dropUnsupported: boolean; autoWrite: boolean },
+        onFrame: (frame: VerifyProgressUpdate) => void,
+        signal: AbortSignal,
+    ) => Promise<VerifySummary | undefined>
+    /** 能力探测：走进度流端点，Node 半对每个「模型 × 能力」发一条 wire 级最小请求（图片输入 1x1 PNG、工具调用强制 tool_choice），三态判定（支持 / 不支持 / 未得出结论）。
+     * 写回只动 `input` 图片模态（工具调用只展示不写）；开关须与 Node 半同值。被中止（停止 / 关窗 / 断连）回 undefined——中止不发终帧且整轮不写回；没能开跑或中途异常则抛错 */
+    probeCapabilities: (
+        models: readonly VerifyTarget[],
+        flags: { capabilities: readonly CapId[]; dropUnsupported: boolean; autoWrite: boolean },
         onFrame: (frame: VerifyProgressUpdate) => void,
         signal: AbortSignal,
     ) => Promise<VerifySummary | undefined>
@@ -103,5 +113,12 @@ export function makeRpcCarrier(rpc: ClientConnectionRpc): RpcCarrier {
         onFrame: (frame: VerifyProgressUpdate) => void,
         signal: AbortSignal,
     ) => streamSummary(PROBE_STREAM_URL, { models, ...flags }, onFrame, signal)
-    return { forceUpdate, resetModels, restoreModels, reportLocale, verifyModels, probeEfforts }
+    /** 能力探测：载荷与探测档位同形，另带能力勾选（image / tool）；两个开关与探测档位同语义（写回只动 input 图片模态） */
+    const probeCapabilities = (
+        models: readonly VerifyTarget[],
+        flags: { capabilities: readonly CapId[]; dropUnsupported: boolean; autoWrite: boolean },
+        onFrame: (frame: VerifyProgressUpdate) => void,
+        signal: AbortSignal,
+    ) => streamSummary(CAPS_STREAM_URL, { models, ...flags }, onFrame, signal)
+    return { forceUpdate, resetModels, restoreModels, reportLocale, verifyModels, probeEfforts, probeCapabilities }
 }

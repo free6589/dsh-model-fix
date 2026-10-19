@@ -87,6 +87,23 @@
 - **配额封顶 200 模型（≤1400 请求），超出整体拒绝**（沿用「不静默截断」纪律，与验证同一 `ProbeLimits`）。
 - **「自动写入」默认开且每次开窗重置为开；Node 半缺键取开**：关掉的旧前端不带该键会让整轮白跑（探完全还原）。关闭时收敛照算不落盘，终帧 `fill` 携带「可补全」假设统计。
 
+## 能力探测
+
+「能力探测」= 图片输入 + 工具调用两条 wire 级探测；判定规则来自 03-probe-audit.md §1.1/§1.2 的裁决（工具调用看 `tool_calls`/`finish_reason` 而非 2xx；图片 1x1 PNG 三态 + data URI 回退）。
+
+- **不走 `llm.stream`、新开裸 HTTP wire 层（`src/probe-wire.ts` + `src/probe-caps.ts`）**：判定规则要求 wire 级控制，`llm.stream` 三样都给不了——① `GenerateOptions` 无 `tool_choice`（docs/host-api.md 字段表），不强制则「模型回文本」无法区分「不支持」与「不想调」；② `ImageBlock` 的字节与编码归 attachment 服务与适配器，「data URI 优先、仅拒内联编码才回退」要求我方控制出线编码并按拒绝原因决定重试；③ pi-ai 路径的失败 `status` 恒缺、响应体被归一成 `LlmFailure.code`，判定要看的原始 status 与 `choices[0]` 无从取。执行骨架仍复用 `runProbeGroups`（分组、五路 worker、帧协议），差异只在 `GroupRunner` 回调（它不碰 `llm`）。
+- **方言范围 v1 只认 `api === 'openai-completions'`**（`POST {baseURL}/chat/completions`）：其它方言与**未声明** `api` 都不发请求、记 `unknown` + 原因 `dialect-scope`——未声明时宿主会复用已装 provider 自己的方言，形状无从猜，宁可不测也不拿错误形状的 400 误判「不支持」。方言扩展是显式扩展点，不在本轮。`baseURL` 直接拼 `/chat/completions`（带不带 `/v1` 由用户配置负责，不猜不改写）。
+- **凭据解析：`apiKey`（明文）优先，`apiKeyEnv`（引用名）经 `ctx.credentials.resolve` 分层解析（进程环境 → provider 存储 → .env），回退进程环境**（与 llm-pi-ai 适配器 `resolveApiKey` 同口径）；解析不到记 `no-credential` 不发请求。已知取舍：`resolve` 拿不到的凭据形态（如 OAuth 会话）无从出线，如实报「未得出结论」。**密钥只进 `Authorization: Bearer` 头，不进日志、不进帧、不进任何返回值**；鉴权头 v1 仅 Bearer（Azure `api-key` 等留扩展点）。
+- **图片判定三态 + 回退链**：200 = supported（`max_tokens=1` 本就没内容可看，不要求复述）；4xx 含 `image`/`vision` = unsupported；5xx/网络/超时 = unknown。**内联拒绝特征（`data:`/`base64`/`inline`/`uri`/`url format`）优先于「不支持图片」判定**：拒收 data URI ≠ 不支持图片，先回退仓库资产 raw URL（`assets/probe-1x1.png`，与内嵌 data URI 常量同字节、随 fork 提交、不依赖第三方图床）重试一次再判；回退后不再重试，按同一矩阵落终态。关键词判定是启发式，误判代价不对称——判 unsupported 会删用户配置，故宁可多一次回退请求。
+- **工具判定：2xx 不单独作数**——必须看到 `choices[0].message.tool_calls` 非空或 `finish_reason === 'tool_calls'` 才 supported（对 model-catalog 探针「只看 2xx」的明确修正）；2xx 无 tool_calls（网关忽略 tools）= unsupported；4xx 含 `tool`/`function` = unsupported；其余 4xx / 5xx / 网络 / 超时 = unknown。响应体容错解析（字段缺失、坏 JSON 一律按「无 tool_calls」）。
+- **三态一律附 `reason`**（原始 status + ≤200 字错误体摘要；非 HTTP 收场给稳定标记 `timeout`/`network`/`dialect-scope`/`no-credential`/`no-endpoint`；raw URL 回退后通过留 `fallback=raw-url` 痕）。响应体有界读取（64K 字符截断），超长错误页不整页进内存。
+- **短路沿用 provider 级语义**：401/403（凭据无效）、端点不通（网络失败）、本组首个请求超时断到组尾；429 只算本次没结论不短路；方言/凭据/端点短路是**不发请求**的逐条 unknown（用户看得出为什么没测），不进 skipped。中止（停止/关窗/断连）不入账、不发帧、不发终帧，与前两条链同口径。
+- **写回只动 `input` 图片模态一个字段**：supported 且「自动写入」开 → 写 `['text','image']`（`MODALITIES` 只有 text/image 两值，写全集不丢任何东西）；unsupported 且「剔除不支持」开 → 删 `input` 键；unknown 一律不动；**工具调用无官方字段，只展示不写**（「顺手补个字段」= 捏造配置）。绝不写 `reasoningEfforts: {}` 空壳（过不了 provider 校验、连累整批写入）——重建模型条目照旧过 `stripEmptyFields`。无预声明故无两步写回、不需要 probeBackup；写回走 `guardedWritebackApi`（冲突重读重算限次）。
+- **中止整轮不写回**（口径与探测档位「中止整轮还原」同源）：半截结论不足以动用户配置；「自动写入」关闭只算不写，终帧 `fill` 是可写入的假设统计（两义同 `ProbeFillResult`）。
+- **计费控制**：每「模型 × 能力」一条最小请求（`max_tokens=1`、单条消息、1x1 图），data URI 回退是同条目内的唯一重试；弹层 quota 文案明说「真实计费请求 + 最小请求形态」；全程可取消。配额 `CAPS_LIMITS`：模型 ≤200、计划 ≤400 条（每能力 ≤200），超出整体拒绝。
+- **开关语义与探测档位对齐**：「自动写入」缺省开、每次开窗重置为开；「剔除不支持」缺省关（只增不减）且只在自动写入开时可切。文案沿用 `probeAutoWrite`/`probeDropUnsupported` 两键；「剔除不支持」的释义在能力探测里只讲图片模态（工具调用没有可写的字段），故另给 `capDropUnsupportedTip` 而非复用档位释义。
+- **记录行一「模型 × 能力」一行**（`{provider}: {model} · {capability}：{result}`），三态文案后附原因括注；wire 只发结构化帧（`probed` 帧多带可选 `cap` 字段、`done` 汇总多带 `caps` 计数），文案全在浏览器半（口径同「验证」条目）。
+
 ## 宿主与卡片
 
 - **RPC channel 在已注入 webServer 的子 fiber 上自注册**，不用宿主 `connection.rpc.handle`（它在 connection 服务 ctx 上求值 `owner.webServer`，而 connection 不再注入 webServer，必抛）；信任围栏复用宿主 `requestRejection`。

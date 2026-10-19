@@ -44,6 +44,8 @@ interface DiagnoseDialogProps {
     running: boolean
     /** 无任何动作在途：与「未勾选任何模型」一同决定发起键是否可点 */
     idle: boolean
+    /** 发起键的追加禁用条件（能力探测的「一项能力都没勾」）；缺省只看 idle 与模型勾选数 */
+    runDisabled?: boolean
     /** 候选（原始即可，本层自会归组） */
     candidates: readonly VerifyCandidate[]
     picked: ReadonlySet<string>
@@ -116,7 +118,7 @@ export function DiagnoseDialog(props: DiagnoseDialogProps) {
                     <Button
                         variant="outline"
                         className="dsh-mf-warn"
-                        disabled={props.running ? false : !props.idle || props.picked.size === 0}
+                        disabled={props.running ? false : !props.idle || props.picked.size === 0 || props.runDisabled === true}
                         onClick={() => {
                             if (props.running) props.onStop()
                             else props.onRun()

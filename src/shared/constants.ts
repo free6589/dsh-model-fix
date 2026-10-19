@@ -19,6 +19,11 @@ export const PROBE_STREAM_ROUTE = `/api/${PLUGIN_NS}/probe`
 /** 同一路由的文档相对形式（去掉前导斜杠），供浏览器半 `fetch` 直接使用 */
 export const PROBE_STREAM_URL = PROBE_STREAM_ROUTE.slice(1)
 
+/** 「能力探测」进度流的路由：与前两条同型，载荷多带能力勾选（图片输入 / 工具调用）与同名两个开关；Node 半走 wire 级裸 HTTP 探测（见 docs/decisions.md「能力探测」） */
+export const CAPS_STREAM_ROUTE = `/api/${PLUGIN_NS}/caps`
+/** 同一路由的文档相对形式（去掉前导斜杠），供浏览器半 `fetch` 直接使用 */
+export const CAPS_STREAM_URL = CAPS_STREAM_ROUTE.slice(1)
+
 /** 推理级别取值，与 harness 的 ModelThinkingLevel 一致（由低到高：浏览器半取「最低档位」即取首个命中项） */
 export const EFFORT_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 

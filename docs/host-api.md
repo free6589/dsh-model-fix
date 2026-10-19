@@ -19,6 +19,7 @@
   - `unset` 只删本键、不折叠空父对象 ⇒ 删空壳必须整段 `unset`（`src/compat.ts` 整段 unset、`src/empty.ts` 空壳判据都建立在这条上）。
   - 只允许写 volatile 字段（`isVolatilePath`，`DSH/packages/settings/settings/src/schema.ts`）。本插件两处写入都在 volatile 子树：自有段 `Config = z.any().volatile()`（根 volatile ⇒ 整段可写）；`llm-pi-ai` 段 `providers: z.dict(profile).default({}).volatile()`（`DSH/packages/llm/llm-pi-ai/src/config.ts`）⇒ `providers.<id>.models` 与 `compat` 可写。
   - `fix` 按 provider 整段 `set` 覆盖 `models`、不写数组下标中间段，是两侧读法（下标支持与否）的安全子集。
+- **能力探测的读取假设**（`src/probe-caps.ts`，wire 级裸 HTTP 探测）：从 `llm-pi-ai` user 层 `providers.<id>` 读 `api`（仅 `openai-completions` 在 v1 探测范围）、`baseURL`（直接拼 `/chat/completions`，不猜 `/v1`）、`apiKey`（明文）与 `apiKeyEnv`（引用名，经 `ctx.credentials.resolve` 取明文）；解析不到即不发请求、记 `no-credential`。`api` 未声明按「方言未知」处理（宿主对缺省 `api` 会复用已装 provider 自己的方言，`dsh-llm-pi-ai` 的 `spec.api === undefined` 分支），同样不发请求。模型 `input` 字段的合法取值域是 `MODALITIES = ['text','image']`（`dsh-llm-pi-ai` 的 `modelFields`），故写回 `['text','image']` 不覆盖任何其它模态。
 
 ### settings：变更事件与装载时序
 
@@ -168,6 +169,7 @@
 
 - `ctx.credentials` 在 `src/index.ts` 的 `inject` 里作顶级依赖（与 `settings` / `llm` 并列），不用 `ctx.get`：宿主基础配置无条件挂载它（`DSH/packages/bundle/base/cordis.patch.yml` 无 `disabled` 条件）⇒ 缺失即异常部署，PENDING 暴露好过静默降级。
 - `describe(ref): Promise<CredentialInfo{ configured; source?; writable }>`：按引用名描述、**永不回值**；解析分层 进程环境 → provider 存储 → `.env`，空值视为未配置。本仓只读 `configured`。判定口径与宿主模型页 `hasProviderApiKey` 同源（settingsNs 段沿 settingsPath 取 profile → `apiKeyEnv` → `describe().configured`，`DSH/packages/api/session-controller/src/types/catalog.ts`）。
+- `resolve(ref): Promise<ResolvedCredential{ value; source } | undefined>`：按引用名**取明文**（与 `describe` 同一分层；空值跳过、未配置回 `undefined`）。仅「能力探测」的 wire 层用它取 `apiKeyEnv` 的密钥（`src/probe-caps.ts` 的 `defaultCredentialLookup`，取不到回退 `process.env[ref]`——同 `dsh-llm-pi-ai` 的 `resolveApiKey` 口径）；密钥只进 `Authorization` 头，不进日志与帧。按 seam 纪律「每次操作现解析、不跨操作缓存」。
 - `credentialRef(value)`（**值导入**）：裸字符串品牌化，语法外（POSIX 标识符）抛 `TypeError` ⇒ 调用前须过 `isCredentialRefName` 预检（同包值导出、不抛）；本仓语法外引用名一律放行不隐藏。
 - 官方适配器默认引用名：`llm-deepseek-api-key` 的 `Config.apiKeyEnv` 默认 `"DEEPSEEK_API_KEY"`（volatile，`config.apiKeyEnv ?? 默认`）⇒ 段缺该字段时本仓判定回退同名常量 `DEFAULT_OFFICIAL_API_KEY_ENV`。
 
@@ -234,7 +236,7 @@
 - **路由 compat 字段**（`src/constants.ts`）：`supportsDeveloperRole` / `supportsStore`（宿主侧 `PiAiCompatProfile` 的 `COMPLETIONS_COMPAT_GATE`，只在 `openai-completions` 消费）。效果：写 `false` = 请求体不带 `store` 键 / 系统提示用 `system`；宿主对未标注端点按「支持」推断（`model.compat.字段 ?? detected.字段` 合并），本插件翻成保守。字段名、检测取向或合并口径变化须同步。
 - **子智能体宿主字面量**：服务名 `subagentModelSelection` / `agents` / `sessionProjections`（经子 fiber 注入，全就绪才注册监听）；投影键 `'modelSelection'`；`SessionHeader.origin = 'subagent'`。浏览器半读宿主段 `subagent-model-selection-settings` 的 `enabled` 布尔（`src/client/composer.tsx`，段缺席视为未开启）。
 - **档位自调宿主字面量**：服务名 `tools` / `systemPrompt` / `sessionController` / `sessionProjections`（任一缺席 ⇒ 子 fiber PENDING 静默）；工具名 `query_reasoning_efforts` / `set_reasoning_effort`（同名重复注册抛错，故装载幂等——已加载时自有段变更跳过，只在开关真翻转时装/卸）；提示词段名 `model-fix:effort-tuning`、`order: 3200`。
-- **RPC 路由**：channel `/tikaflow-model-fix`；`VERIFY_STREAM_ROUTE = /api/tikaflow-model-fix/verify`、`PROBE_STREAM_ROUTE = /api/tikaflow-model-fix/probe`（`connection.fetch` exact 路由，须落 `/api` 下）；浏览器 `fetch` 用 `ROUTE.slice(1)` 的文档相对路径。两条流共用 `src/rpc.ts` 的 `progressStreamFetch`；探测那条入口先查守卫（一轮写两次配置），已开回 409 + 中文文案。
+- **RPC 路由**：channel `/tikaflow-model-fix`；`VERIFY_STREAM_ROUTE = /api/tikaflow-model-fix/verify`、`PROBE_STREAM_ROUTE = /api/tikaflow-model-fix/probe`、`CAPS_STREAM_ROUTE = /api/tikaflow-model-fix/caps`（`connection.fetch` exact 路由，须落 `/api` 下）；浏览器 `fetch` 用 `ROUTE.slice(1)` 的文档相对路径。三条流共用 `src/rpc.ts` 的 `progressStreamFetch`；写配置的两条（探测档位、能力探测）入口先查守卫，已开回 409 + 中文文案。
 - **RPC endpoint**：`forceUpdate` / `resetModels` / `restoreModels`，结果信封 `{ ok: true, value: { changed } }`。
 - **本插件错误码**（`ConnectionRpcResult` 的 `error.code`）：`model-fix/write-in-progress`、`model-fix/force-update-failed`、`model-fix/reset-models-failed`、`model-fix/restore-models-failed`、`model-fix/unknown-endpoint`。
 - **宿主错误码**：`SETTINGS_CONFLICT`；信封层 `gateway/bad-request`；`invalid-request`（宿主自复刻的非法 rpcId 哨兵，非宿主常量）。

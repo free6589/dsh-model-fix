@@ -1,6 +1,6 @@
 /**
- * 最小请求的执行引擎：验证（每模型一次不带档位的请求）与探测档位（逐档请求）共用。
- * 设计裁决见 docs/decisions.md「验证」与「探测档位」。
+ * 最小请求的执行引擎：验证（每模型一次不带档位的请求）、探测档位（逐档请求）与能力探测（每「模型 × 能力」一条 wire 级请求）共用。
+ * 设计裁决见 docs/decisions.md「验证」「探测档位」「能力探测」。
  */
 
 import type { LlmRuntime, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
@@ -122,7 +122,7 @@ export type ProbeEmitter = (
     progress: ProbeFrameProgress,
 ) => void
 
-/** 一组怎么逐条跑：两个功能的全部差异都在这个回调里（验证每模型一条请求，探测档位逐档平推） */
+/** 一组怎么逐条跑：各功能的全部差异都在这个回调里（验证每模型一条请求，探测档位逐档平推，能力探测走 wire 级判定） */
 export type GroupRunner = (
     llm: Pick<LlmRuntime, 'stream'>,
     group: ProviderProbeGroup,
@@ -163,6 +163,7 @@ export async function runProbeGroups(
             model: probe.model,
             effort: probe.effort,
             outcome: verdict.outcome,
+            ...(verdict.cap === undefined ? {} : { cap: verdict.cap }),
             ...(progress.skipped === undefined ? {} : { skipped: progress.skipped }),
             done: completed,
             total,

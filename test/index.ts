@@ -15,6 +15,8 @@ import { run as runOfficialFilter } from '@test/official-filter.test'
 import { run as runUpgrade } from '@test/upgrade.test'
 import { run as runProbe } from '@test/probe.test'
 import { run as runProbeBackup } from '@test/probe-backup.test'
+import { run as runProbeCaps } from '@test/probe-caps.test'
+import { run as runCapRun } from '@test/cap-run.test'
 import { run as runRefresh } from '@test/refresh.test'
 import { run as runReset } from '@test/reset.test'
 import { run as runRestore } from '@test/restore.test'
@@ -64,6 +66,10 @@ section('probe.test.ts')
 await runProbe()
 section('probe-backup.test.ts')
 await runProbeBackup()
+section('probe-caps.test.ts')
+await runProbeCaps()
+section('cap-run.test.ts')
+await runCapRun()
 section('rpc-carrier.test.ts')
 await runRpcCarrier()
 section('rpc-route.test.ts')

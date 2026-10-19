@@ -1,4 +1,5 @@
 import type { LlmFailure } from '@deepseek-ai/dsh-llm/types'
+import type { CapProbeVerdict } from '@/shared/cap-probe'
 import type { ProbeOutcome, ProviderBlockReason, VerifyFailureFacts, VerifyProbe } from '@/shared/verify-progress'
 import { isProviderBlocking } from '@/shared/verify-progress'
 
@@ -21,10 +22,12 @@ const UNREACHABLE_CODES: ReadonlySet<string> = new Set(['TRANSPORT', 'STREAM_CLO
 /** 请求参数不正确（宿主 `classifyPiAiError` 从文案认出的 4xx / invalid_request） */
 const INVALID_REQUEST_CODE = 'INVALID_REQUEST'
 
-/** 一次探测的判定：结论 + 失败时的原始事实（收到 block-start 时无事实） */
+/** 一次探测的判定：结论 + 失败时的原始事实（收到 block-start 时无事实）。
+ * `cap` 只有「能力探测」携带（wire 级三态是它的结论轴，`outcome` 只作短路与汇报的机器账本） */
 export interface ProbeVerdict {
     outcome: ProbeOutcome
     failure: VerifyFailureFacts | undefined
+    cap?: CapProbeVerdict
 }
 
 /** 由终止块失败事实判定结果：一律按宿主 `code` 判（不看 status、不比对文案），未识别码归「其它」 */

@@ -1,7 +1,7 @@
 /** 卡片内联状态行助手：Notice 形状、全卡共用占用态 CardBusy、文案截断与写回超时判定。 */
 
 /** 全部写操作共用的占用态 */
-export type CardBusy = 'save' | 'force' | 'reset' | 'restore' | 'clear' | 'verify' | 'probe' | null
+export type CardBusy = 'save' | 'force' | 'reset' | 'restore' | 'clear' | 'verify' | 'probe' | 'caps' | null
 
 /** 内联状态行：文本 + 色调（success 映射宿主 .savedNotice 绿，error 映射 .error 红） */
 export interface Notice {

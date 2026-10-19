@@ -144,6 +144,31 @@ export const en: Record<CardKey, string> = {
     probeFillSkipped: 'Could fill reasoning levels for {models} model(s): {added} added, {removed} removed; nothing was written.',
     probeFillFailed: 'Probe efforts failed: {message}.',
     probeStoppedLine: 'Stopped; this run does not continue.',
+    // Capability probe: three-state verdicts "supported / unsupported / no conclusion (reason)", one line per model × capability
+    capProbe: 'Probe capabilities',
+    capTitle: 'Choose models to probe capabilities',
+    capDesc: 'Probes image input and tool calling with real requests; each probe sends one minimal request.',
+    // The billing notice is a hard requirement: spell out both the real billed request and its minimal shape
+    capQuota: 'Capability probing sends real billed requests (each a minimal request: one message, max_tokens=1, a 1×1 image) and may use a small amount of your quota.',
+    capTabRecords: 'Capability log',
+    capGo: 'Probe',
+    capStop: 'Stop',
+    capImage: 'Image input',
+    capTool: 'Tool calling',
+    capSupported: 'supported',
+    capUnsupported: 'unsupported',
+    capUnknown: 'no conclusion',
+    capReason: ' ({reason})',
+    // Separators match verifyLine: colon for levels, middle dot for the capability (model ids contain slashes)
+    capLine: '{provider}: {model} · {capability}: {result}',
+    capDone: 'Probed {models} model(s), {probes} capability(ies): {supported} supported, {unsupported} unsupported, {unknown} without a conclusion.',
+    // The write-back touches only the input modality field; tool calling has no field to write and is display-only
+    capFilled: 'Wrote image modality for {models} model(s): {added} added, {removed} removed.',
+    capFillSkipped: 'Could write image modality for {models} model(s): {added} added, {removed} removed; nothing was written.',
+    capFillFailed: 'Capability probing failed: {message}.',
+    capStoppedLine: 'Stopped; this run does not continue.',
+    // "Drop unsupported" only acts on the image modality here (tool calling has no writable field), hence a capability-specific tip
+    capDropUnsupportedTip: 'When on, models judged to lack image input lose their image modality declaration; when off, nothing is removed.',
     terminalCommandLine: 'Command line {n}',
     terminalSignal: 'signal {signal}',
     terminalExitCode: 'exit code {code}',

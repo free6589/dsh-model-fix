@@ -1,4 +1,6 @@
 import { LEVELS } from '@/constants'
+import type { CapId } from '@/shared/cap-probe'
+import { CAP_IDS } from '@/shared/cap-probe'
 import type { VerifyProbe } from '@/shared/verify-progress'
 import { isPlainObject } from '@/shared/types'
 
@@ -24,6 +26,9 @@ interface ProbeLimits {
 export const VERIFY_LIMITS: ProbeLimits = { maxProbes: 200, maxModels: Number.POSITIVE_INFINITY }
 /** 探测档位的配额：全量展开为「模型数 × 至多 7 档」（off 仅当模型已声明时才探测），故模型数封顶 200（至多 1400 次最小请求） */
 export const PROBE_LIMITS: ProbeLimits = { maxProbes: 1400, maxModels: 200 }
+
+/** 能力探测的配额：每能力每轮 ≤200 条（能力至多两种 ⇒ 请求数封顶 400）；图片探测的 data URI 回退重试不占计划条目（同一条目内的重试） */
+export const CAPS_LIMITS: ProbeLimits = { maxProbes: 400, maxModels: 200 }
 
 /** 校验并展开请求载荷为清单：条目不带 `efforts`（或空数组）即一条不带档位的请求（验证的每个模型都长这样）；带 `efforts` 的条目（探测档位）按档位逐条展开；非法条目或超出 `limits` 一律拒绝（返回 undefined） */
 export function planProbes(payload: unknown, limits: ProbeLimits = VERIFY_LIMITS): VerifyProbe[] | undefined {
@@ -76,4 +81,33 @@ export function planProbeGroups(payload: unknown, limits: ProbeLimits, rejectMes
     const probes = planProbes(payload, limits)
     if (probes === undefined) throw new Error(rejectMessage)
     return groupProbesByProvider(probes)
+}
+
+/** 校验并展开能力探测载荷：`models`（{provider, model}）× `capabilities`（image/tool 勾选）逐条一条最小请求。
+ * 能力按载荷序去重（重复勾选不发两次）；`efforts` 一概忽略（能力探测不带档位参数）。非法条目或超出 `limits` 一律返回 undefined */
+export function planCapProbes(payload: unknown, limits: ProbeLimits = CAPS_LIMITS): VerifyProbe[] | undefined {
+    if (!isPlainObject(payload)) return
+    const models = payload.models
+    const capabilities = payload.capabilities
+    if (!Array.isArray(models) || models.length === 0) return
+    if (!Array.isArray(capabilities) || capabilities.length === 0) return
+    const caps: CapId[] = []
+    for (const capability of capabilities) {
+        // 能力取值须落在 v1 支持的两种内（入参来自浏览器，仍按不可信输入校验）
+        if (typeof capability !== 'string' || !(CAP_IDS as readonly string[]).includes(capability)) return
+        if (!caps.includes(capability as CapId)) caps.push(capability as CapId)
+    }
+    const probes: VerifyProbe[] = []
+    for (const entry of models) {
+        if (!isPlainObject(entry)) return
+        const { provider, model } = entry
+        if (typeof provider !== 'string' || provider === '' || typeof model !== 'string' || model === '') return
+        for (const capability of caps) probes.push({ provider, model, capability })
+    }
+    // 一条计划即一次真实请求（回退重试不占条目），故请求数取清单长度；模型数另按「提供方 / 模型」去重计
+    const plannedModels = new Set<string>()
+    for (const probe of probes) {
+        plannedModels.add(JSON.stringify([probe.provider, probe.model]))
+    }
+    return probes.length > limits.maxProbes || plannedModels.size > limits.maxModels ? undefined : probes
 }

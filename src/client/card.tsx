@@ -32,6 +32,7 @@ import { CardMeta } from '@/client/card-meta'
 import { ConfirmModal } from '@/client/confirm'
 import { DiagnoseDialog } from '@/client/diagnose-dialog'
 import { ProbeDialog } from '@/client/probe-dialog'
+import { CapDialog } from '@/client/cap-dialog'
 import type { RpcCarrier } from '@/client/rpc-carrier'
 import { errorText } from '@/shared/errors'
 import { DEFAULT_CONFIG, toStored } from '@/shared/config-schema'
@@ -39,6 +40,7 @@ import type { CardBusy, Notice } from '@/client/card-notice'
 import { isWritebackTimeout, truncateMessage } from '@/client/card-notice'
 import { useVerifyRun } from '@/client/card-verify'
 import { useProbeRun } from '@/client/card-probe'
+import { useCapRun } from '@/client/card-caps'
 
 /** 瓦片 chevron：宿主 ui-primitives 导出的描边 chevron 图标 */
 const CHEVRON_DOWN = primitives.IconChevronDownOutlineRegular
@@ -113,7 +115,7 @@ export function Card(props: CardProps) {
         if (!dirty && autoCollapse) setOpen(false)
     }, [busy, dirty, autoCollapse])
 
-    // 「验证模型」「探测档位」的整轮编排内聚在 card-verify.ts / card-probe.ts；
+    // 「验证模型」「探测档位」「能力探测」的整轮编排内聚在 card-verify.ts / card-probe.ts / card-caps.ts；
     // hooks 必须在早退 return 之前调用
     const verify = useVerifyRun({
         t,
@@ -130,8 +132,16 @@ export function Card(props: CardProps) {
         probeEfforts: props.probeEfforts,
         onNotice: setNotice,
     })
-    // 五个动作键共用一个占用态：任一处在途或任一弹层开着，其余四个一并禁用
-    const configLocked = busy !== null || verify.open || probe.open
+    const caps = useCapRun({
+        t,
+        busy,
+        setBusy,
+        user: providersSnap.status === 'ready' ? providersSnap.user : undefined,
+        probeCapabilities: props.probeCapabilities,
+        onNotice: setNotice,
+    })
+    // 六个动作键共用一个占用态：任一处在途或任一弹层开着，其余五个一并禁用
+    const configLocked = busy !== null || verify.open || probe.open || caps.open
 
     // 配置服务不可用：保留静态外壳（无展开语义）便于发现与排查
     if (snap.status === 'unavailable') {
@@ -340,7 +350,7 @@ export function Card(props: CardProps) {
             {/* 动作键独占一行、置于分隔线之上：键数增长后不再与取消/保存挤在同一行 */}
             <div className="dsh-mf-bar">
                 <span className="dsh-mf-actions">
-                    {/* 五个动作键共用上方那个占用态：在途或任一弹层开着，其余四个一并禁用 */}
+                    {/* 六个动作键共用上方那个占用态：在途或任一弹层开着，其余五个一并禁用 */}
                     <button
                         type="button"
                         className="dsh-mf-force"
@@ -382,6 +392,15 @@ export function Card(props: CardProps) {
                         onClick={probe.onOpen}
                     >
                         {t('probe')}
+                    </button>
+                    {/* 与探测档位同一 warn 语义（真实计费请求；写回只动 input 图片模态）；放在探测档位之后 */}
+                    <button
+                        type="button"
+                        className="dsh-mf-discard dsh-mf-warn"
+                        disabled={!ready || configLocked}
+                        onClick={caps.onOpen}
+                    >
+                        {t('capProbe')}
                     </button>
                 </span>
             </div>
@@ -521,6 +540,35 @@ export function Card(props: CardProps) {
                 terminalLabels={probe.terminalLabels}
                 onRun={probe.run}
                 onStop={probe.stop}
+            />
+            <CapDialog
+                t={t}
+                open={caps.open}
+                onClose={caps.close}
+                running={caps.running}
+                idle={busy === null}
+                candidates={caps.candidates}
+                picked={caps.picked}
+                onTogglePick={caps.togglePick}
+                onToggleGroup={caps.toggleGroup}
+                tools={caps.candidates.length > 0 ? [{
+                    label: groupAllPicked(caps.picked, caps.candidates) ? t('verifyDeselectAll') : t('verifySelectAll'),
+                    onClick: caps.toggleAll,
+                }] : []}
+                capImage={caps.capImage}
+                onCapImageChange={caps.setCapImage}
+                capTool={caps.capTool}
+                onCapToolChange={caps.setCapTool}
+                autoWrite={caps.autoWrite}
+                onAutoWriteChange={caps.setAutoWrite}
+                dropUnsupported={caps.dropUnsupported}
+                onDropUnsupportedChange={caps.setDropUnsupported}
+                total={caps.total}
+                done={caps.done}
+                lines={caps.lines}
+                terminalLabels={caps.terminalLabels}
+                onRun={caps.run}
+                onStop={caps.stop}
             />
         </>
     )

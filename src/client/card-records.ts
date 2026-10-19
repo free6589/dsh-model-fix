@@ -51,3 +51,19 @@ export function verifyLineOf(frame: VerifyProbedFrame, t: TranslateNS<'settings.
             : t('verifyLine', { provider: frame.provider, model: frame.model, effort: frame.effort, result })
     return frame.skipped === undefined ? line : `${line}${t('verifySkipped', { count: String(frame.skipped) })}`
 }
+
+/** 一条能力探测记录行：一「模型 × 能力」一行，三态文案后附原因（`capReason`）；带 skipped 时补剩余条数。
+ * 结论轴是 `cap`（wire 级三态），`frame.outcome` 只是短路与计数的机器账本；无 `cap` 的帧（理论上不出现）回落验证行模板 */
+export function capLineOf(frame: VerifyProbedFrame, t: TranslateNS<'settings.modelFix'>): string {
+    const cap = frame.cap
+    if (cap === undefined) return verifyLineOf(frame, t)
+    const verdict = t(cap.result === 'supported' ? 'capSupported' : cap.result === 'unsupported' ? 'capUnsupported' : 'capUnknown')
+    const result = cap.reason === undefined ? verdict : `${verdict}${t('capReason', { reason: cap.reason })}`
+    const line = t('capLine', {
+        provider: frame.provider,
+        model: frame.model,
+        capability: t(cap.capability === 'image' ? 'capImage' : 'capTool'),
+        result,
+    })
+    return frame.skipped === undefined ? line : `${line}${t('verifySkipped', { count: String(frame.skipped) })}`
+}

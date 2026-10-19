@@ -60,6 +60,7 @@ Node.js（ESM）+ `@deepseek-ai/cordis`；tsdown 双配置构建到 `lib/`（Nod
 | 重置 / 恢复的写回端点 | [写回端点](docs/decisions.md#写回端点) |
 | 验证模型 | [验证](docs/decisions.md#验证) |
 | 探测档位 | [探测档位](docs/decisions.md#探测档位) |
+| 能力探测（图片输入 / 工具调用） | [能力探测](docs/decisions.md#能力探测) |
 | 宿主接线与卡片行为 | [宿主与卡片](docs/decisions.md#宿主与卡片) |
 
 ## 命令

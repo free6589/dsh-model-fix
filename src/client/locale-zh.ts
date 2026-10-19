@@ -141,6 +141,31 @@ export const zh: Record<CardKey, string> = {
     probeFillSkipped: '可为 {models} 个模型补全推理级别：新增 {added} 个、剔除 {removed} 个；未执行写入。',
     probeFillFailed: '探测档位失败：{message}。',
     probeStoppedLine: '已停止，本轮不再继续探测。',
+    // 能力探测：三态结论「支持 / 不支持 / 未得出结论（原因）」，一行一「模型 × 能力」
+    capProbe: '能力探测',
+    capTitle: '选择要探测能力的模型',
+    capDesc: '用真实请求探测模型的图片输入与工具调用能力；每次探测只发一条最小请求。',
+    // 计费提示是硬要求：真实计费请求 + 最小请求的具体形态都要说清
+    capQuota: '能力探测会发起真实计费请求（每项最小请求：单条消息、max_tokens=1、1×1 图片），可能消耗少量额度。',
+    capTabRecords: '能力记录',
+    capGo: '探测',
+    capStop: '停止',
+    capImage: '图片输入',
+    capTool: '工具调用',
+    capSupported: '支持',
+    capUnsupported: '不支持',
+    capUnknown: '未得出结论',
+    capReason: '（{reason}）',
+    // 与 verifyLine 的分隔一致：层级用冒号、能力用中点（模型 id 本身含斜杠，不拿它当分隔符）
+    capLine: '{provider}: {model} · {capability}：{result}',
+    capDone: '共探测 {models} 个模型、{probes} 项能力：支持 {supported} 项、不支持 {unsupported} 项、未得出结论 {unknown} 项。',
+    // 写回只动 input 图片模态一个字段；工具调用无处可写、只展示
+    capFilled: '已为 {models} 个模型写入图片模态：新增 {added} 个、剔除 {removed} 个。',
+    capFillSkipped: '可为 {models} 个模型写入图片模态：新增 {added} 个、剔除 {removed} 个；未执行写入。',
+    capFillFailed: '能力探测失败：{message}。',
+    capStoppedLine: '已停止，本轮不再继续探测。',
+    // 「剔除不支持」在能力探测里只作用于图片模态（工具调用没有可写的官方字段），故给能力专属释义
+    capDropUnsupportedTip: '开启后，明确判为不支持图片输入的模型会去掉图片模态声明；关闭时只增不减。',
     terminalCommandLine: '命令第 {n} 行',
     terminalSignal: '信号 {signal}',
     terminalExitCode: '退出码 {code}',

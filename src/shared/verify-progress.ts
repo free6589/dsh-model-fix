@@ -5,12 +5,15 @@
  */
 
 import { isPlainObject } from '@/shared/types'
+import type { CapId, CapProbeVerdict, CapTally } from '@/shared/cap-probe'
 
-/** 计划里的一条探测请求：一次请求 = 一个「模型 × 推理级别」组合；`effort` 缺省即不带 `reasoningEffort`。 */
+/** 计划里的一条探测请求：一次请求 = 一个「模型 × 推理级别」组合；`effort` 缺省即不带 `reasoningEffort`。
+ * `capability` 只有「能力探测」携带（模型 × 能力，一次 wire 级最小请求）；与 `effort` 互斥、不共存于一条探测 */
 export interface VerifyProbe {
     provider: string
     model: string
     effort?: string
+    capability?: CapId
 }
 
 /** 单次探测的判定结果。只按宿主 `LlmFailure` 的 `code` 分类（宿主明令不按 message 解析），两侧都不做文案比对。 */
@@ -68,6 +71,8 @@ export interface VerifyProbeResult {
     outcome: ProbeOutcome
     /** 失败时的原始事实；收到 block-start 时为 undefined */
     failure: VerifyFailureFacts | undefined
+    /** 能力探测的三态结论（wire 级判定，`outcome` 只作短路与汇报的机器账本）；验证与探测档位缺省 */
+    cap?: CapProbeVerdict
 }
 
 /** 一个提供方的验证结论：逐条明细 + 短路情况（由 Node 半执行器产出，供汇报函数消费）。 */
@@ -160,6 +165,11 @@ export interface VerifySummary {
      * 「自动写入」开启即已写入的补全统计；关闭时是可补全的假设统计，浏览器半据此换措辞。
      */
     fill?: ProbeFillResult
+    /**
+     * 能力探测的三态计数（仅能力探测产出；验证与探测档位恒缺省）。
+     * `fill` 同样复用：能力探测的写回只动 `input` 图片模态，「自动写入」关闭时是可写入的假设统计。
+     */
+    caps?: CapTally
     /** 本次验证的模型数（按「提供方 / 模型」去重），即用户勾了几个；取自计划，被短路的模型也在内 */
     tested: number
     /** 可用模型数：至少有一条请求通过的去重模型数 */
@@ -196,6 +206,8 @@ export type VerifyProgressFrame =
         skipped?: number
         done: number
         total: number
+        /** 能力探测的三态结论；验证与探测档位的帧缺省（`outcome` 仍是其唯一结论轴） */
+        cap?: CapProbeVerdict
     }
     /** 终帧：整轮跑完，`summary` 承载完整结论 */
     | { type: 'done'; summary: VerifySummary }
@@ -239,9 +251,18 @@ function isProgressFrame(value: unknown): value is VerifyProgressFrame {
             && typeof value.outcome === 'string' && typeof value.done === 'number' && typeof value.total === 'number'
             && (value.effort === undefined || typeof value.effort === 'string')
             && (value.skipped === undefined || typeof value.skipped === 'number')
+            && (value.cap === undefined || isCapVerdict(value.cap))
     }
     if (value.type === 'failed') return typeof value.message === 'string'
     return value.type === 'done' && isPlainObject(value.summary)
         && typeof value.summary.tested === 'number' && typeof value.summary.models === 'number'
         && typeof value.summary.efforts === 'number' && typeof value.summary.plannedEfforts === 'number'
+}
+
+/** 能力结论的形状校验：`capability` / `result` 取值域 + `reason` 可选字符串（防坏帧把三态文案渲染成任意值） */
+function isCapVerdict(value: unknown): value is CapProbeVerdict {
+    if (!isPlainObject(value)) return false
+    return (value.capability === 'image' || value.capability === 'tool')
+        && (value.result === 'supported' || value.result === 'unsupported' || value.result === 'unknown')
+        && (value.reason === undefined || typeof value.reason === 'string')
 }
