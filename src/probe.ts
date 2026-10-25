@@ -13,7 +13,7 @@ import type { GroupRunner, ProbeEmitter, ProbeRunOptions } from '@/probe-engine'
 import { finishRun, probeOnce, runProbeGroups } from '@/probe-engine'
 import type { ProviderProbeGroup } from '@/probe-plan'
 import { PROBE_LIMITS, planProbeGroups } from '@/probe-plan'
-import { isEffortRejection, providerBlockReason, sameModelTail, shouldSkipModelTail } from '@/probe-verdict'
+import { isEffortRejection, providerBlockReason, shouldSkipModelTail } from '@/probe-verdict'
 import type { EffortApply } from '@/fill'
 import { convergeProbeEfforts, declareProbeEfforts } from '@/fill'
 import { clearProbeBackup, saveProbeBackup } from '@/probe-backup'
@@ -22,61 +22,108 @@ import { endIgnoreAll, startIgnoreAll } from '@/guard'
 /** 探测请求不合法时的报错文案（入参来自浏览器半，一律按不可信输入校验） */
 const PROBE_REJECT_MESSAGE = `${PLUGIN_NAME}: 探测请求不合法（模型条目或推理级别取值越界）`
 
+/** 同一个提供方内可并行的模型链数；模型自己的推理级别仍严格按顺序探测。 */
+const PROBE_MODEL_CONCURRENCY = 3
+
 /** 「提供方 / 模型」二元组键（与 fill.ts、verifyKey 同口径） */
 function targetKey(provider: string, model: string): string {
     return JSON.stringify([provider, model])
 }
 
-/** 顺序跑完一组的探测请求（组内零并发）：provider 级失败（含首个请求超时）短整组，额度耗尽 / 限流短到该模型的档位尾 */
+/** 同一提供方按「模型链」并发：每个模型的推理档位严格串行，模型之间最多三路。 */
 const runProbeGroup: GroupRunner = async (
     llm: Pick<LlmRuntime, 'stream'>,
     group: ProviderProbeGroup,
     signal: AbortSignal,
     emitProbe: ProbeEmitter,
 ): Promise<ProviderProbeOutcome> => {
-    const results: VerifyProbeResult[] = []
-    // 已跑通至少一档的模型：判「档位不被支持」的第二条件对照
+    type IndexedProbe = { probe: ProviderProbeGroup['probes'][number]; index: number }
+    const chainsByModel = new Map<string, IndexedProbe[]>()
+    group.probes.forEach((probe, index) => {
+        const key = targetKey(probe.provider, probe.model)
+        let chain = chainsByModel.get(key)
+        if (chain === undefined) {
+            chain = []
+            chainsByModel.set(key, chain)
+        }
+        chain.push({ probe, index })
+    })
+    const chains = [...chainsByModel.values()]
+    const results = new Array<VerifyProbeResult | undefined>(group.probes.length)
+    // 每条模型链独立记录已跑通档位，只有更低档跑通后才可把后续 INVALID_REQUEST 判为不支持
     const usable = new Set<string>()
     let blockedBy: ProviderBlockReason | undefined
-    // 本组已发出的请求数：provider 级短路要区分「首个请求就超时」与「链路已跑通、只是这一次慢」
-    let sent = 0
-    for (let index = 0; index < group.probes.length; index++) {
-        // 外部中止在此早停：后续请求带着已中止的信号只会跑出假失败
-        if (signal.aborted) break
-        const probe = group.probes[index]
-        const verdict = await probeOnce(llm, probe, signal)
-        sent += 1
-        // 中止没有结论：不入明细也不发帧，不能进补全与剔除的输入
-        if (verdict.outcome === 'aborted') continue
-        if (verdict.outcome === 'usable') usable.add(probe.model)
-        // 判「档位不被支持」：宿主判「参数不正确」且该模型已有更低档跑通（无基线，拿已跑通档顶替，见 docs/decisions.md「探测档位」）
-        const outcome = probe.effort !== undefined && usable.has(probe.model) && isEffortRejection(verdict.failure)
-            ? 'unsupported-effort'
-            : verdict.outcome
-        results.push({
-            provider: probe.provider,
-            model: probe.model,
-            effort: probe.effort,
-            outcome,
-            failure: verdict.failure,
-        })
-        // 算出两级短路的「剩余未发出条数」：provider 级断到组尾，模型级断到该模型的档位尾；被跳过的请求不进 results
-        let skipped = 0
-        const blockReason = providerBlockReason(outcome, sent === 1)
-        if (blockReason !== undefined) {
-            blockedBy = blockReason
-            skipped = group.probes.length - index - 1
-        } else if (shouldSkipModelTail(outcome, verdict.failure) || outcome === 'rate-limit') {
-            // 限流是本功能自有的追加判据（超时不算），见 docs/decisions.md「探测档位」
-            skipped = sameModelTail(group.probes, index)
+    let issuedRequests = 0
+    let completedRequests = 0
+    let nextChain = 0
+
+    const runChain = async (chain: readonly IndexedProbe[]): Promise<void> => {
+        const firstItem = chain[0]
+        if (firstItem === undefined) return
+        const modelKey = targetKey(firstItem.probe.provider, firstItem.probe.model)
+        let index = 0
+        while (index < chain.length) {
+            if (signal.aborted) return
+            // 另一条模型链已确认 provider 级失败：这条链剩余请求不再派发，只补齐进度账本
+            if (blockedBy !== undefined) {
+                const skipped = chain.length - index
+                emitProbe(chain[index].probe, { outcome: 'aborted', failure: undefined }, { settled: skipped, skipped })
+                return
+            }
+
+            const item = chain[index]
+            if (item === undefined) return
+            const firstIssued = issuedRequests === 0
+            issuedRequests += 1
+            const verdict = await probeOnce(llm, item.probe, signal)
+            // 用户中止不产出结论；上游主动中止则只略过这一档，继续探测后续档位
+            if (verdict.outcome === 'aborted') {
+                if (signal.aborted) return
+                index += 1
+                continue
+            }
+
+            const firstCompleted = completedRequests === 0
+            completedRequests += 1
+            if (verdict.outcome === 'usable') usable.add(modelKey)
+            const outcome = item.probe.effort !== undefined && usable.has(modelKey) && isEffortRejection(verdict.failure)
+                ? 'unsupported-effort'
+                : verdict.outcome
+            results[item.index] = {
+                provider: item.probe.provider,
+                model: item.probe.model,
+                effort: item.probe.effort,
+                outcome,
+                failure: verdict.failure,
+            }
+
+            // 并发时“首个请求超时”须同时满足：它是第一个发出的请求，且没有任何其它请求先完成。
+            // 否则其它模型已有响应，不能因单个慢请求就把整个 provider 判为不可用。
+            const blockReason = providerBlockReason(outcome, firstIssued && firstCompleted)
+            let skipped = 0
+            if (blockReason !== undefined) {
+                blockedBy ??= blockReason
+                skipped = chain.length - index - 1
+            } else if (shouldSkipModelTail(outcome, verdict.failure) || outcome === 'rate-limit') {
+                skipped = chain.length - index - 1
+            }
+            emitProbe(item.probe, { outcome, failure: verdict.failure }, {
+                settled: 1 + skipped,
+                ...(skipped === 0 ? {} : { skipped }),
+            })
+            index += 1 + skipped
         }
-        if (skipped > 0) index += skipped
-        emitProbe(probe, { outcome, failure: verdict.failure }, {
-            settled: 1 + skipped,
-            ...(skipped === 0 ? {} : { skipped }),
-        })
-        if (blockedBy !== undefined) break
     }
+
+    // 固定大小 worker 池：一次最多三条模型链并行；每条链内部仍由 await 保证等级顺序。
+    await Promise.all(Array.from({ length: Math.min(PROBE_MODEL_CONCURRENCY, chains.length) }, async () => {
+        while (!signal.aborted && nextChain < chains.length) {
+            const chain = chains[nextChain]
+            nextChain += 1
+            if (chain !== undefined) await runChain(chain)
+        }
+    }))
+
     const models = new Set<string>()
     let plannedEfforts = 0
     for (const probe of group.probes) {
@@ -85,14 +132,13 @@ const runProbeGroup: GroupRunner = async (
     }
     return {
         provider: group.provider,
-        results,
+        results: results.filter((item): item is VerifyProbeResult => item !== undefined),
         blockedBy,
         planned: group.probes.length,
         plannedEfforts,
         tested: models.size,
     }
 }
-
 /** 两个开关的取值：「自动写入」缺省开、「剔除不支持」缺省关；显式给了非布尔值按非法入参拒绝 */
 function flagsOf(payload: unknown): { dropUnsupported: boolean; autoWrite: boolean } {
     if (!isPlainObject(payload)) throw new Error(PROBE_REJECT_MESSAGE)
