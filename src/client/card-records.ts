@@ -43,6 +43,12 @@ const OUTCOME_KEYS: Record<ProbeOutcome, CardKey> = {
 
 /** 一条探测结论记录行；provider 级失败不带模型与档位，带 skipped 时补剩余条数 */
 export function verifyLineOf(frame: VerifyProbedFrame, t: TranslateNS<'settings.modelFix'>): string {
+    // 这类帧是“未派发”的进度占位，不是请求被中止；显示真正触发短路的提供方原因。
+    if (frame.skippedReason !== undefined) {
+        const reason = t(OUTCOME_KEYS[frame.skippedReason])
+        const line = t('verifyLineProvider', { provider: frame.provider, result: reason })
+        return `${line}${t('verifySkipped', { count: String(frame.skipped ?? 0) })}`
+    }
     const result = t(OUTCOME_KEYS[frame.outcome])
     const line = isProviderBlocking(frame.outcome)
         ? t('verifyLineProvider', { provider: frame.provider, result })
