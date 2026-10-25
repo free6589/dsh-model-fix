@@ -1,149 +1,59 @@
 # dsh-model-fix
 
-DSH[（DeepSeek Harness）](https://github.com/deepseek-ai/deepseek-harness) 插件：提供更好的模型使用体验，包括但不限于：多种方式填充模型参数、提升模型兼容性、记住推理级别、子智能体实时跟随模型和推理级别、AI 自主调节档位等。
+**English** | [简体中文](README.zh-CN.md)
 
-> [!IMPORTANT]
-> 如果觉得好用，请给个星哦~
-> 你的支持是我继续开发的动力！也能让别人更容易找到这个插件。
+Make custom models easier to use in [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness).
 
-> 本插件已在 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 收录，可在 [dsh-market](https://github.com/dsh-market/dsh-market) 中搜索、安装。
+dsh-model-fix is a community plugin that fills in missing model settings and adds practical tools for compatibility, reasoning levels, and model capability checks. You can start with the default settings—no YAML editing required.
 
-插件截图：
+## Quick install
 
-![插件管理界面](screenshots/dual.png)
-
-[更多截图](screenshots/)
-
-## 功能
-
-功能特点：
-
-- 可视化设置：见[可视化设置](#可视化设置)
-- 开箱即用：启动即以内置缓存填充（离线可用），缓存数据自动保持最新
-
-本插件根据实际需求，提供以下功能：
-
-- 添加了第三方模型，但是不知道推理级别、上下文窗口等参数？【自动填充】按 models.dev 数据补全模型参数（推理级别、上下文窗口、最大输出、图片模态），已有配置不受影响
-- 第三方模型参数更新了，却不知道怎么填？【允许更新】：自动更新模型参数（已有配置也会更新）
-- 手动给模型添加推理级别后，发现请求报错？【禁用`developer`角色】系统提示词改用旧版兼容的`system`角色
-- 请求体带 `store` 参数导致报错？【禁用`store`参数】请求体里不再带 `store` 键，兼容不认该参数的端点（如 LiteLLM 代理）
-- 某个提供方的模型不想被插件接管？【排除提供方】本插件完全不动（填充、更新、兼容性写入、强制更新、重置推理级别等功能跳过），基本等效于对它关闭插件
-- 切换到某个模型后，推理级别重置了，还需要手动再选择一次？【记住推理级别】每模型独立记住上次手动选择的推理级别，切换模型时自动恢复
-- 感觉推理级别记忆问题？【清除记忆】关闭「记住推理级别」时，将会询问是否确认清除记忆，可在清除后不保存设置，依然可以继续记忆，但旧记忆已清除
-- 新配置的模型也不想自己选推理级别？【默认使用 high】切换模型时，若没有该模型的记忆，且模型提供 `high` 档位，则自动把推理级别设为 `high`
-- 不想已删除的模型还残留推理级别记忆？【忘记已删除模型】删除模型（或提供方）后，其推理级别记忆随之清除；关闭后不做任何处理，记忆原样保留
-- 第三方模型到底支不支持图片输入 / 工具调用？【能力探测】用真实最小请求逐模型试出这两项能力（1×1 图片 / 强制工具调用），结论三态且附原因；图片模态可自动写回模型配置
-- 子智能体启动后还想切换模型与推理级别？【跟随父智能体】子智能体的提供方、模型与推理级别实时同步父智能体（**关闭**「允许 Agent 为子智能体选择模型」时生效）
-- 希望AI根据任务难度自己选择合适的推理级别？【自主调节档位】AI 可根据任务难度自主调节推理档位
-- 没配官方 API 密钥，模型选择器里却挂着一组用不了的官方模型？【隐藏官方API】官方 API 未配置密钥时不在模型选择器中显示
-- 推理级别的名字看着别扭？【本地化推理级别】模型选择器里的推理级别按界面语言显示名称
-- 推理级别翻译后对不上原名称？【显示原档位名】在本地化推理级别时，还显示原档位名（如「最大 · Max」），方便对照。
-
-UI界面还提供了一些额外功能：
-
-- 强制更新：按模型缓存的当前值立即覆盖一遍
-- 重置推理级别：删除所有模型的推理级别字段（可能触发【自动填充】）
-- 恢复备份：回退到插件启动时已存在的模型参数（提供方已删除的不会恢复，已新增的不会删除）
-- 验证模型：验证所选模型是否可用（每模型一次最小请求，只读不写配置；不支持的档位可用「探测档位」逐档试出）
-- 探测档位：**【最真实】**勾选模型后逐个推理级别试出实际支持的档位（「选择未填充」一键勾好还没填档位的模型）；「自动写入」控制是否把结论写回
-- 能力探测：勾选模型后用真实最小请求探测「图片输入」与「工具调用」能力（各发一条最小请求：1×1 PNG 多模态 / 强制工具调用，判定看真实响应而非只看 2xx），结论三态：支持 / 不支持 / 未得出结论（附原因）；「自动写入」控制是否把图片模态结论写回（工具调用没有官方字段、只展示不写）
-- **输入框快捷入口**：聊天输入框工具行常驻「模型优化」入口（点开弹完整配置卡）和「跟随」状态灯（点击即可开关）
-- **界面显示位置可自定义**：【UI 与行为】控制配置界面显示在哪些地方（模型页 / 内置插件 / 工具栏的模型优化入口 / 工具栏的跟随状态灯），关闭即从该处卸载；插件功能本身照常运行，「插件管理」里的入口恒可见且不可关闭（否则无处改回）
-
-### 可视化设置
-
-- 入口：
-  - 「设置」-->「模型」-->「模型参数填充」卡片（卡片默认收起）
-  - 「设置」-->「内置插件」-->「模型填充」选项卡-->「模型参数填充」卡片
-  - 「插件」-->「已安装」-->「模型参数填充」详情页
-  - 「插件」-->「已安装」-->「模型参数填充」详情页-->「包含的组件」-->「dsh-model-fix」
-  - 「输入框」-->「工具栏」-->「模型优化」入口
-
-## 安装
-
-> 以下所有安装方式安装的内容、效果完全相同。
-
-### 方式一：通过插件市场安装（推荐）
-
-> `dsh-market` 插件市场会自动处理本地构建审批、校验和冲突等问题。
-
-直接在插件市场搜索我的用户名：`TikaFlow`，找到「dsh-model-fix」插件，即可安装。
-
-### 方式二：通过 tarball 安装（推荐）
-
-> [!NOTE]
-> 已有用户安装/更新其他包时报 `ERR_PNPM_TARBALL_INTEGRITY`，且指出冲突源为本插件时，按以下方式恢复：
->
-> **卸载重装**：在「插件」-->「已安装」中卸载本插件，再用方式二的固定版本链接重新安装，装到的即 README 所钉版本。
-
-在 DSH 中，点击「插件」-->「添加插件」，复制以下链接到输入框，完成安装并立即启用：
-
-```txt
-https://github.com/free6589/dsh-model-fix/releases/download/v0.33.0/dsh-model-fix.tgz
-```
-
-或在命令行执行：
+**Recommended: install the prebuilt release.** Make sure DSH is installed, then run this one command:
 
 ```bash
-dsh plugin --profile web add https://github.com/free6589/dsh-model-fix/releases/download/v0.33.0/dsh-model-fix.tgz
+dsh plugin --profile web add "https://github.com/TikaFlow/dsh-model-fix/releases/latest/download/dsh-model-fix.tgz"
 ```
 
-### 方式三：通过 Git 安装（不推荐）
-
-> 使用这种方式安装需要现场构建插件，不推荐。
+When installation finishes, restart DSH:
 
 ```bash
-dsh plugin --profile web add github:TikaFlow/dsh-model-fix
+dsh web
 ```
 
-## 版本说明
+If DSH is already running, stop it with `Ctrl+C` first, then run `dsh web` again.
 
-由于 DSH 正在快速迭代，因此本插件所依赖/兼容的 DSH 宿主版本总是追随较新的版本。若插件功能异常，请检查 DSH 版本是否满足插件依赖版本。
+Prefer clicking? If the DSH Plugin Market is available, open it, search for **dsh-model-fix**, and click **Install**.
 
-### 支持范围
+## What it does
 
-DSH `0.1.7-rc.2` ~ `0.2.1-alpha.3`
+- **Fills missing model settings** — reasoning levels, context window, maximum output, and image input, using cached data from [models.dev](https://models.dev/).
+- **Improves compatibility** — optional switches for endpoints that reject the `developer` role or the `store` request field.
+- **Remembers your reasoning level** — saves your choice per model; optional settings can default to `high` or let the AI adjust the level.
+- **Tests models** — checks availability and can probe reasoning levels, image input, and tool calls.
+- **Helps subagents follow you** — optionally keeps a child agent in sync with its parent’s model and reasoning level.
 
-## 使用说明
+## Start using it
 
-无需任何操作，进入 DSH 后插件即自动生效：自动填充缺失的模型参数，并记住用户手动选择的推理级别。某个提供方不想被接管，就把它的 id 加进「排除提供方」。
+1. Start or restart DSH.
+2. Open **Settings → Model → Model Parameter Fill**.
+3. Leave the defaults enabled to fill in missing model settings automatically. Change options in the card only when you need to.
 
-### 配置
+By default, the plugin fills missing values without replacing settings you already configured. Turn on **Allow Update** only when you want existing values to be updated. Add a provider ID to **Excluded Providers** if you want the plugin to leave that provider alone.
 
-**图形界面（推荐）**：见 [可视化设置](#可视化设置)
+> **Note:** Model capability and reasoning-level probes send real, small requests to the selected endpoints. They may use your provider's API quota. Run them only for the models you want to test.
 
-**手动编辑**（等效方式）：Web 设置界面右上角「打开配置文件 / Open configuration file」直接编辑 `cordis.patch.yml`：
+## Install this repository's source
 
-```yaml
-- id: tikaflow-model-fix
-  name: dsh-model-fix
-  config:
-    version-8:
-      autoFill:           # 自动填充缺失的字段；默认 true
-        reasoning: true
-        context: true
-        image: true
-      allowUpdate:        # 允许更新已有模型的字段；默认 false
-        reasoning: false
-        context: false
-        image: false
-      compat:             # 兼容性
-        disableDeveloper: true
-        disableStore: true
-      excludes: []        # 排除的提供方 id 列表
-      efforts: {}         # 每模型推理级别记忆
-      userExperience:     # 用户体验，对所有提供方生效，不支持排除
-        rememberEfforts: true
-        defaultHigh: true
-        forgetRemoved: true
-        followParent: false
-        selfTune: false
-        hideOfficial: true
-        localizeEfforts: true
-        showOriginalEfforts: true
-      behavior:           # 界面显示与行为
-        showInModels: true
-        showInBuiltinPlugins: true
-        showInComposer: true
-        showFollowStatus: true
+The quick-install command above uses the upstream project's prebuilt release. To install the source code from this repository instead:
+
+```bash
+dsh plugin --profile web add github:free6589/dsh-model-fix
 ```
+
+Source installs may build locally and can require build-script approval.
+
+## Help and license
+
+- [Report a bug or request a feature](https://github.com/free6589/dsh-model-fix/issues)
+- [Browse the source code](https://github.com/free6589/dsh-model-fix)
+- License: [MIT](LICENSE)
