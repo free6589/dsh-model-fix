@@ -21,6 +21,7 @@ import type { WireOutcome } from '@/probe-wire'
 import { chatCompletionsUrl, postChatCompletions } from '@/probe-wire'
 import { isPlainObject, providersOf } from '@/shared/types'
 import { descriptorOf } from '@/section'
+import { logicalProviderOf } from '@/probe-route'
 import type { CapInputApply } from '@/cap-fill'
 import { applyCapInput, previewCapInput } from '@/cap-fill'
 
@@ -320,71 +321,123 @@ export function planCapGroups(payload: unknown): ProviderProbeGroup[] {
     return groupProbesByProvider(probes)
 }
 
-/** 顺序跑完一组能力探测（组内零并发）：端点级短路（方言/凭据/端点缺失整组不发请求但逐条给结论；401/403、端点不通、首请求超时断到组尾） */
-function makeRunGroup(endpoints: ReadonlyMap<string, EndpointResolution>, deps: CapDeps): GroupRunner {
+/** 顺序跑完一组能力探测；端点按真实 provider 解析，HTTP 短路按逻辑渠道隔离。 */
+export function makeCapGroupRunner(endpoints: ReadonlyMap<string, EndpointResolution>, deps: CapDeps): GroupRunner {
     return async (
         llm: Pick<LlmRuntime, 'stream'>,
         group: ProviderProbeGroup,
         signal: AbortSignal,
         emitProbe: ProbeEmitter,
     ): Promise<ProviderProbeOutcome> => {
-        void llm // 能力探测走 wire 级裸 HTTP，不经过 llm.stream（见文件头）
+        void llm
+        type RouteState = {
+            provider: string
+            results: VerifyProbeResult[]
+            blockedBy: ProviderBlockReason | undefined
+            planned: number
+            models: Set<string>
+            sent: number
+        }
+        const routes = new Map<string, RouteState>()
+        const indexesByRoute = new Map<string, number[]>()
+        group.probes.forEach((probe, index) => {
+            const route = logicalProviderOf(probe.provider, probe.model)
+            let state = routes.get(route)
+            if (state === undefined) {
+                state = {
+                    provider: route,
+                    results: [],
+                    blockedBy: undefined,
+                    planned: 0,
+                    models: new Set<string>(),
+                    sent: 0,
+                }
+                routes.set(route, state)
+            }
+            state.planned++
+            state.models.add(JSON.stringify([probe.provider, probe.model]))
+            const indexes = indexesByRoute.get(route) ?? []
+            indexes.push(index)
+            indexesByRoute.set(route, indexes)
+        })
+
         const results: VerifyProbeResult[] = []
-        let blockedBy: ProviderBlockReason | undefined
-        // 本组已发出的请求数：provider 级短路要区分「首个请求就超时」与「链路已跑通、只是这一次慢」
-        let sent = 0
+        const skippedIndexes = new Set<number>()
+        const endpoint = endpoints.get(group.provider)
         for (let index = 0; index < group.probes.length; index++) {
-            // 外部中止在此早停：后续请求带着已中止的信号只会跑出假失败
             if (signal.aborted) break
+            if (skippedIndexes.has(index)) continue
             const probe = group.probes[index]
+            if (probe === undefined) continue
+            const route = logicalProviderOf(probe.provider, probe.model)
+            const state = routes.get(route)
+            if (state === undefined) continue
+
             const capability = probe.capability ?? 'image'
-            const endpoint = endpoints.get(group.provider)
             let klass: CapClass | undefined
             if (endpoint === undefined || endpoint.kind !== 'ok') {
-                // 不发请求的短路结论：unknown + 稳定原因标记（逐条入账，用户看得出「为什么没测」）
+                // 不发请求的结论逐条入账；它不是 HTTP 失败，不阻断其它条目。
                 const reason = endpoint?.reason ?? 'no-endpoint'
                 klass = { verdict: { capability, result: 'unknown', reason }, outcome: 'other' }
             } else {
-                sent += 1
+                state.sent++
                 klass = capability === 'image'
                     ? await probeImage(endpoint, probe.model, signal, deps)
                     : await probeTool(endpoint, probe.model, signal, deps)
             }
-            // 中止没有结论：不入明细也不发帧，不能进补全与剔除的输入
-            if (klass === undefined) continue
+
+            if (klass === undefined) {
+                if (signal.aborted) break
+                // 上游中止这次 wire 请求但整轮未被取消：没结论、不入账，仍结算进度。
+                emitProbe(probe, { outcome: 'aborted', failure: undefined }, { settled: 1, route: state.provider })
+                continue
+            }
+
             const verdict: ProbeVerdict = { outcome: klass.outcome, failure: undefined, cap: klass.verdict }
-            results.push({
+            const result: VerifyProbeResult = {
                 provider: probe.provider,
                 model: probe.model,
                 effort: undefined,
                 outcome: klass.outcome,
                 failure: undefined,
                 cap: klass.verdict,
-            })
-            // provider 级短路断到组尾（401/403 凭据无效、端点不通、本组首个请求超时）；被跳过的请求不进 results
-            let skipped = 0
-            const blockReason = providerBlockReason(klass.outcome, sent === 1)
-            if (blockReason !== undefined) {
-                blockedBy = blockReason
-                skipped = group.probes.length - index - 1
             }
-            if (skipped > 0) index += skipped
+            results.push(result)
+            state.results.push(result)
+
+            const blockReason = providerBlockReason(klass.outcome, state.sent === 1)
+            let skipped = 0
+            if (blockReason !== undefined) {
+                state.blockedBy = blockReason
+                const laterIndexes = (indexesByRoute.get(route) ?? []).filter((candidate) => candidate > index && !skippedIndexes.has(candidate))
+                for (const candidate of laterIndexes) skippedIndexes.add(candidate)
+                skipped = laterIndexes.length
+            }
             emitProbe(probe, verdict, {
                 settled: 1 + skipped,
-                ...(skipped === 0 ? {} : { skipped }),
+                route: state.provider,
+                ...(skipped === 0 ? {} : { skipped, skippedReason: blockReason }),
             })
-            if (blockedBy !== undefined) break
         }
-        // 计划数 = 该组的能力条目数；模型数按「提供方 / 模型」去重（口径与验证/探测档位一致）
+
         const models = new Set<string>()
         for (const probe of group.probes) models.add(JSON.stringify([probe.provider, probe.model]))
+        const segments = [...routes.values()].map((state) => ({
+            provider: state.provider,
+            results: state.results,
+            blockedBy: state.blockedBy,
+            planned: state.planned,
+            plannedEfforts: 0,
+            tested: state.models.size,
+        }))
         return {
             provider: group.provider,
             results,
-            blockedBy,
+            blockedBy: undefined,
             planned: group.probes.length,
             plannedEfforts: 0,
             tested: models.size,
+            segments,
         }
     }
 }
@@ -433,7 +486,7 @@ export async function probeCapabilities(
     for (const group of groups) {
         endpoints.set(group.provider, await resolveEndpoint(providers?.[group.provider], lookup))
     }
-    const summary = await runProbeGroups(ctx.llm, groups, makeRunGroup(endpoints, deps), options)
+    const summary = await runProbeGroups(ctx.llm, groups, makeCapGroupRunner(endpoints, deps), options)
     const aborted = options.signal?.aborted === true
     const entries = aborted ? [] : imageInputEntries(summary.results, flags.dropUnsupported)
     // 写回统计两义同探测档位：「自动写入」开 = 已写入的补全统计；关 = 可写入的假设统计（只算不写）
