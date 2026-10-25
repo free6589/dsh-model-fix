@@ -67,7 +67,7 @@ const runProbeGroup: GroupRunner = async (
             // 另一条模型链已确认 provider 级失败：这条链剩余请求不再派发，只补齐进度账本
             if (blockedBy !== undefined) {
                 const skipped = chain.length - index
-                emitProbe(chain[index].probe, { outcome: 'aborted', failure: undefined }, { settled: skipped, skipped })
+                emitProbe(chain[index].probe, { outcome: 'aborted', failure: undefined }, { settled: skipped, skipped, skippedReason: blockedBy })
                 return
             }
 
