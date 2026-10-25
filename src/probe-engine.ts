@@ -113,6 +113,8 @@ interface ProbeFrameProgress {
     settled: number
     /** 因短路而未发出的条数；无则缺省 */
     skipped?: number
+    /** 被提供方级故障短路时，说明未发请求的原因；无则缺省 */
+    skippedReason?: ProviderBlockReason
 }
 
 /** 一个 `runGroup` 的产出出口：一条请求的结论 + 该帧的进度交代 */
@@ -165,6 +167,7 @@ export async function runProbeGroups(
             outcome: verdict.outcome,
             ...(verdict.cap === undefined ? {} : { cap: verdict.cap }),
             ...(progress.skipped === undefined ? {} : { skipped: progress.skipped }),
+            ...(progress.skippedReason === undefined ? {} : { skippedReason: progress.skippedReason }),
             done: completed,
             total,
         })
