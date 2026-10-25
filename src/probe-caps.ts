@@ -389,7 +389,7 @@ export function makeCapGroupRunner(endpoints: ReadonlyMap<string, EndpointResolu
             if (klass === undefined) {
                 if (signal.aborted) break
                 // 上游中止这次 wire 请求但整轮未被取消：没结论、不入账，仍结算进度。
-                emitProbe(probe, { outcome: 'aborted', failure: undefined }, { settled: 1, route: state.provider })
+                emitProbe(probe, { outcome: 'aborted', failure: undefined }, { settled: 1, ...(state.provider === group.provider ? {} : { route: state.provider }) })
                 continue
             }
 
