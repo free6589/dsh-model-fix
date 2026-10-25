@@ -20,7 +20,7 @@ const PROBE_TIMEOUT_MS = 30_000
  * 兜底与「读流」赛跑，适配器即使忽略 `signal`，probeOnce 也必然返回（见 docs/decisions.md「验证」）。
  */
 const PROBE_TIMEOUT_GRACE_MS = 3_000
-/** 同时在跑的**提供方**数（单提供方并发恒为 1，由分组串行保证） */
+/** 同时在跑的提供方分组数；组内请求并发由各自的 GroupRunner 决定。 */
 const PROBE_PROVIDER_CONCURRENCY = 5
 
 /** 取失败事实的可序列化子集（供调用方自行细分，不参与本插件的判定） */
@@ -139,7 +139,7 @@ export interface ProbeRunOptions {
 }
 
 /**
- * 跑完一组清单（组内零并发、组间最多五路）并汇总；**不发 `done` 帧**——终帧由调用方在收尾时发。
+ * 跑完所有分组（组间最多五路）；组内调度由 GroupRunner 决定。**不发 `done` 帧**——终帧由调用方在收尾时发。
  * 已中止即不再开新组，从未开跑的组保持 undefined、被排除在汇报之外。
  */
 export async function runProbeGroups(
@@ -170,7 +170,7 @@ export async function runProbeGroups(
         })
     }
     options.onProgress?.({ type: 'opened', total })
-    // 第 w 个 worker 只跑下标 ≡ w (mod workers) 的组；组内逐条 await 即「同一 provider 零并发」
+    // 第 w 个 worker 只跑下标 ≡ w (mod workers) 的组；组内请求调度由对应 GroupRunner 负责
     const workers = Math.min(PROBE_PROVIDER_CONCURRENCY, groups.length)
     await Promise.all(Array.from({ length: workers }, (_, worker) => (async () => {
         for (let at = worker; at < groups.length; at += workers) {
