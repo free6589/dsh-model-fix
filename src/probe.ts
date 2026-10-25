@@ -145,7 +145,7 @@ const runProbeGroup: GroupRunner = async (
             }
             emitProbe(item.probe, { outcome, failure: verdict.failure }, {
                 settled: 1 + skipped,
-                route: routeState.provider,
+                ...(routeState.provider === group.provider ? {} : { route: routeState.provider }),
                 ...(skipped === 0 ? {} : { skipped }),
             })
             index += 1 + skipped
