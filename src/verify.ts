@@ -96,7 +96,8 @@ const runGroup: GroupRunner = async (
         emitProbe(probe, verdict, {
             settled: 1 + skipped,
             ...(state.provider === group.provider ? {} : { route: state.provider }),
-            ...(skipped === 0 ? {} : { skipped, skippedReason: blockReason }),
+            ...(skipped === 0 ? {} : { skipped }),
+            ...(skipped === 0 || state.provider === group.provider ? {} : { skippedReason: blockReason }),
         })
     }
 
