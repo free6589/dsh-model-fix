@@ -8,6 +8,8 @@ import {
     imageProbeBody,
     toolProbeBody,
     resolveEndpoint,
+    makeCapGroupRunner,
+    planCapGroups,
     imageInputEntries,
     capTallyOf,
     IMAGE_DATA_URI,
@@ -16,6 +18,9 @@ import {
 import { CAP_IDS } from '@/shared/cap-probe'
 import { postChatCompletions, chatCompletionsUrl, WIRE_BODY_LIMIT } from '@/probe-wire'
 import { planCapProbes, CAPS_LIMITS } from '@/probe-plan'
+import { runProbeGroups } from '@/probe-engine'
+import type { LlmRuntime } from '@deepseek-ai/dsh-llm'
+import type { VerifyProgressFrame } from '@/shared/verify-progress'
 import { planCapInput } from '@/cap-fill'
 import type { VerifyProbeResult } from '@/shared/verify-progress'
 import { check, stable } from '@test/helper'
@@ -201,6 +206,51 @@ export async function run(): Promise<void> {
         const many = Array.from({ length: 201 }, (_, i) => ({ provider: 'a', model: `m${i}` }))
         check('planCapProbes：超配额整体拒绝（不静默截断）', planCapProbes({ models: many, capabilities: ['image'] }) === undefined)
         check('CAPS_LIMITS：每能力每轮 ≤200 请求', CAPS_LIMITS.maxModels === 200 && CAPS_LIMITS.maxProbes === 400)
+    }
+
+    // ---------- 同一聚合网关内按逻辑渠道隔离 credential short-circuit ----------
+    {
+        const { calls, fetchImpl } = stubFetch((_url, init) => {
+            const body = JSON.parse(String(init.body)) as { model?: string }
+            if (body.model === 'freelane/m1') return respond(401, 'unauthorized')
+            return respond(200, '{"choices":[{"message":{"tool_calls":[{"id":"1"}]},"finish_reason":"tool_calls"}]}')
+        })
+        const groups = planCapGroups({
+            models: [
+                { provider: 'bifrost', model: 'freelane/m1' },
+                { provider: 'bifrost', model: 'tokenrhythm/m1' },
+                { provider: 'bifrost', model: 'freelane/m2' },
+                { provider: 'bifrost', model: 'wb/cn:model' },
+            ],
+            capabilities: ['tool'],
+        })
+        const runner = makeCapGroupRunner(new Map([
+            ['bifrost', { kind: 'ok', baseURL: 'https://gw.example.com/v1', apiKey: 'sk-test' } as const],
+        ]), { fetchImpl })
+        const frames: VerifyProgressFrame[] = []
+        const summary = await runProbeGroups(
+            { stream: () => { throw new Error('capability runner must not use llm.stream') } } as unknown as Pick<LlmRuntime, 'stream'>,
+            groups,
+            runner,
+            { onProgress: (frame) => { frames.push(frame) } },
+        )
+        const freelane = summary.providers.find((report) => report.provider === 'freelane')
+        const tokenrhythm = summary.providers.find((report) => report.provider === 'tokenrhythm')
+        const wb = summary.providers.find((report) => report.provider === 'wb')
+        check(
+            '能力探测聚合器渠道隔离：freelane 401 后只跳过 freelane，其他渠道仍请求',
+            stable(calls.map((call) => (call.body as { model: string }).model)) === stable(['freelane/m1', 'tokenrhythm/m1', 'wb/cn:model'])
+            && freelane !== undefined && freelane.blockedBy === 'credential' && freelane.planned === 2 && freelane.probed === 1
+            && tokenrhythm !== undefined && tokenrhythm.blockedBy === undefined && tokenrhythm.probed === 1
+            && wb !== undefined && wb.blockedBy === undefined && wb.probed === 1
+            && summary.planned === 4 && summary.probed === 3,
+            { calls: calls.map((call) => call.body), providers: summary.providers, planned: summary.planned, probed: summary.probed },
+        )
+        check(
+            '能力探测跳过帧保留逻辑 route 与短路原因',
+            frames.some((frame) => frame.type === 'probed' && frame.route === 'freelane' && frame.skippedReason === 'credential' && frame.skipped === 1),
+            frames.filter((frame) => frame.type === 'probed'),
+        )
     }
 
     // ---------- 写回计划：只动 input、绝不产 reasoningEfforts op、unknown 零 op ----------
