@@ -71,7 +71,7 @@ const runGroup: GroupRunner = async (
         if (verdict.outcome === 'aborted') {
             if (signal.aborted) break
             // 上游主动中止不是用户取消：不入明细、不短路，但必须结算进度。
-            emitProbe(probe, verdict, { settled: 1, route: state.provider })
+            emitProbe(probe, verdict, { settled: 1, ...(state.provider === group.provider ? {} : { route: state.provider }) })
             continue
         }
 
