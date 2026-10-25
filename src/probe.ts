@@ -100,7 +100,7 @@ const runProbeGroup: GroupRunner = async (
                 emitProbe(
                     chain[index].probe,
                     { outcome: 'aborted', failure: undefined },
-                    { settled: skipped, skipped, skippedReason: routeState.blockedBy, ...(routeState.provider === group.provider ? {} : { route: routeState.provider }) },
+                    { settled: skipped, skipped, ...(routeState.provider === group.provider ? {} : { skippedReason: routeState.blockedBy, route: routeState.provider }) },
                 )
                 return
             }
