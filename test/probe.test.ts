@@ -302,14 +302,16 @@ export async function run(): Promise<void> {
     {
         // provider 级失败短路整组：该组剩余条数一条都不发，被短路的模型不产生可用结论
         const ctx = ctxOf()
+        const frames: VerifyProgressFrame[] = []
         const { llm, calls } = stub({ 'm1@minimal': [finishError('TRANSPORT')] })
-        const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1'), target('acme', 'm2', true)] })
+        const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1'), target('acme', 'm2', true)] }, { onProgress: (frame) => { frames.push(frame) } })
         check(
             '端点不可达后停止派发：并行的另一个模型请求可能已在途，blockedBy 为 unreachable',
             calls.length >= 2 && calls.length <= 3 && summary.probed === calls.length && summary.planned === 13
             && summary.providers[0].blockedBy === 'unreachable' && !summary.providers[0].reachable,
             { calls, report: summary.providers[0] },
         )
+        check('因端点不可达而跳过的未派发请求明确带上跳过原因，而不是伪装成用户中止', frames.some((frame) => frame.type === 'probed' && frame.skippedReason === 'unreachable' && (frame.skipped ?? 0) > 0), frames.filter((frame) => frame.type === 'probed'))
         // 两个模型都没跑完 ⇒ 原样还原预声明之前的档位表（m1 无字段、m2 回到 off+high）
         check(
             '没跑完的模型原样还原：m1 字段不出现、m2 回到预声明之前的两档',
@@ -323,8 +325,9 @@ export async function run(): Promise<void> {
         // 本组首个请求就超时：成因在请求之外——url 不可达、端点服务中断、本地网络不通，
         // 再逐条等下去只是把同样的 30 秒乘上几十遍，故短整组（本功能没有基线，首个请求就是该模型的第一档）
         const ctx = ctxOf()
+        const frames: VerifyProgressFrame[] = []
         const { llm, calls } = stub({ 'm1@minimal': [finishError('TIMEOUT')] })
-        const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1'), target('acme', 'm2', true)] })
+        const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1'), target('acme', 'm2', true)] }, { onProgress: (frame) => { frames.push(frame) } })
         check(
             '首个发出的请求超时后停止继续派发（已在途请求会收尾），blockedBy 记 timeout',
             calls.length >= 2 && calls.length <= 3 && summary.probed === calls.length && summary.planned === 13
@@ -332,6 +335,7 @@ export async function run(): Promise<void> {
             && summary.providers[0].blockedBy === 'timeout' && summary.providers[0].reachable,
             { calls, report: summary.providers[0] },
         )
+        check('因提供方级超时而跳过的未派发请求保留 timeout 原因', frames.some((frame) => frame.type === 'probed' && frame.skippedReason === 'timeout' && (frame.skipped ?? 0) > 0), frames.filter((frame) => frame.type === 'probed'))
         check(
             '首个超时的两个模型都算没跑完：原样还原（m1 无字段、m2 回到预声明之前的两档）',
             effortsOf(ctx, 'acme', 'm1') === undefined
