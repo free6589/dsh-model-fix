@@ -215,8 +215,8 @@ export async function run(): Promise<void> {
         check(
             '聚合器：freelane 的网络错误只短路 freelane，tokenrhythm 与 wb 继续完成',
             freelane?.blockedBy === 'unreachable' && freelane.planned === 12 && freelane.probed < freelane.planned
-            && tokenrhythm?.blockedBy === undefined && tokenrhythm.probed === tokenrhythm.planned
-            && wb?.blockedBy === undefined && wb.probed === wb.planned
+            && tokenrhythm !== undefined && tokenrhythm.blockedBy === undefined && tokenrhythm.probed === tokenrhythm.planned
+            && wb !== undefined && wb.blockedBy === undefined && wb.probed === wb.planned
             && summary.probed === calls.length && summary.planned === 24,
             { reports: summary.providers, called: calls.length, planned: summary.planned, probed: summary.probed },
         )
