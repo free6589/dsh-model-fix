@@ -18,6 +18,7 @@ import type { EffortApply } from '@/fill'
 import { convergeProbeEfforts, declareProbeEfforts } from '@/fill'
 import { clearProbeBackup, saveProbeBackup } from '@/probe-backup'
 import { endIgnoreAll, startIgnoreAll } from '@/guard'
+import { logicalProviderOf } from '@/probe-route'
 
 /** 探测请求不合法时的报错文案（入参来自浏览器半，一律按不可信输入校验） */
 const PROBE_REJECT_MESSAGE = `${PLUGIN_NAME}: 探测请求不合法（模型条目或推理级别取值越界）`
@@ -30,11 +31,6 @@ function targetKey(provider: string, model: string): string {
     return JSON.stringify([provider, model])
 }
 
-/** 模型 ID 第一个斜杠前的部分视为聚合器里的逻辑渠道；没有前缀则退回实际 provider。 */
-function logicalProviderOf(provider: string, model: string): string {
-    const slash = model.indexOf('/')
-    return slash > 0 ? model.slice(0, slash) : provider
-}
 
 /** 同一实际 provider（网关）最多三条模型链并行；每模型档位严格串行，失败短路只作用于模型前缀对应的逻辑渠道。 */
 const runProbeGroup: GroupRunner = async (
@@ -114,9 +110,10 @@ const runProbeGroup: GroupRunner = async (
             const firstIssued = routeState.issuedRequests === 0
             routeState.issuedRequests++
             const verdict = await probeOnce(llm, item.probe, signal)
-            // 用户中止不产出结论；上游主动中止则只略过这一档，继续探测后续档位。
+            // 用户中止由整轮信号控制；上游主动中止没有结论，但仍结算这一条进度，避免 done 永远落后于 total。
             if (verdict.outcome === 'aborted') {
                 if (signal.aborted) return
+                emitProbe(item.probe, verdict, { settled: 1, route: routeState.provider })
                 index += 1
                 continue
             }
