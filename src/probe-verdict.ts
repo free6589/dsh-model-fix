@@ -1,6 +1,6 @@
 import type { LlmFailure } from '@deepseek-ai/dsh-llm/types'
 import type { CapProbeVerdict } from '@/shared/cap-probe'
-import type { ProbeOutcome, ProviderBlockReason, VerifyFailureFacts, VerifyProbe } from '@/shared/verify-progress'
+import type { ProbeOutcome, ProviderBlockReason, VerifyFailureFacts } from '@/shared/verify-progress'
 import { isProviderBlocking } from '@/shared/verify-progress'
 
 /** 探测判定层（零 ctx 纯函数）：把宿主失败事实翻译成本插件结论，并给出两级短路的唯一判据（口径见 docs/decisions.md「验证」「探测档位」） */
@@ -48,15 +48,8 @@ export function isEffortRejection(failure: VerifyFailureFacts | undefined): bool
     return failure?.code === INVALID_REQUEST_CODE
 }
 
-/** 从 `from` 之后起与它同模型的探测条数（请求按模型分组，即该模型剩下的档位；探测档位用它短到档位尾，验证每模型一条用不到） */
-export function sameModelTail(probes: readonly VerifyProbe[], from: number): number {
-    let count = 0
-    for (let index = from + 1; index < probes.length && probes[index]?.model === probes[from]?.model; index++) count++
-    return count
-}
-
-/** 该失败是否足以否定整个提供方（provider 级短路判据，验证与探测共用）：能断定后续必然失败才短。
- * 端点不通 / 凭据无效（`isProviderBlocking`，同一提供方共用同一 url 与 key）或本组首个请求超时（理由记 `timeout` 而非 `unreachable`——报告只按真实失败事实记）；不短路返回 `undefined` */
+/** 该失败是否足以否定整个逻辑渠道（渠道级短路判据，验证与探测共用）：能断定后续必然失败才短。
+ * 端点不通 / 凭据无效（`isProviderBlocking`，同一逻辑渠道共用同一 url 与 key）或该渠道首个请求超时（理由记 `timeout` 而非 `unreachable`——报告只按真实失败事实记）；不短路返回 `undefined` */
 export function providerBlockReason(outcome: ProbeOutcome, firstRequest: boolean): ProviderBlockReason | undefined {
     if (isProviderBlocking(outcome)) return outcome
     return firstRequest && outcome === 'timeout' ? 'timeout' : undefined

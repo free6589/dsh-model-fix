@@ -91,7 +91,7 @@ export function toolProbeBody(model: string): Record<string, unknown> {
     }
 }
 
-/** wire 观测 → 三态结论 + 机器账本结局（`outcome` 只供 provider 级短路与汇报计数，结论轴是 `verdict`） */
+/** wire 观测 → 三态结论 + 机器账本结局（`outcome` 只供渠道级短路与汇报计数，结论轴是 `verdict`） */
 export interface CapClass {
     verdict: CapProbeVerdict
     outcome: ProbeOutcome
@@ -111,7 +111,7 @@ function httpReason(status: number, text: string): string {
     return body === '' ? `HTTP ${status}` : `HTTP ${status}: ${body}`
 }
 
-/** 非 HTTP 收场的分类：外部中止回 undefined（不入账），超时 / 网络失败是 `unknown` 的两种来源 */
+/** 非 HTTP 收场的分类：中止回 undefined（外部中止由调用方早停），超时 / 网络失败是 `unknown` 的两种来源 */
 function classifyWire(capability: CapId, outcome: WireOutcome, attempt: 'data-uri' | 'raw-url' = 'data-uri'): CapClass | undefined {
     if (outcome.kind === 'aborted') return undefined
     if (outcome.kind === 'timeout') {
@@ -125,7 +125,7 @@ function classifyWire(capability: CapId, outcome: WireOutcome, attempt: 'data-ur
         : classifyTool(outcome.status, outcome.text)
 }
 
-/** 401/403 = 凭据无效（短路该 provider 剩余探测）；429 = 限流（不短路、无结论） */
+/** 401/403 = 凭据无效（短路该逻辑渠道剩余探测）；429 = 限流（不短路、无结论） */
 function credentialOrRateLimit(capability: CapId, status: number, text: string): CapClass | undefined {
     if (status === 401 || status === 403) {
         return { verdict: { capability, result: 'unknown', reason: httpReason(status, text) }, outcome: 'credential' }
@@ -195,7 +195,7 @@ export function hasToolCall(text: string): boolean {
     return message.tool_calls.length > 0
 }
 
-/** 一条图片探测（含 data URI → raw URL 的一次回退）；中止回 undefined（不入账不发帧） */
+/** 一条图片探测（含 data URI → raw URL 的一次回退）；外部中止回 undefined（不入账不发帧） */
 async function probeImage(
     endpoint: EndpointOk,
     model: string,
@@ -216,7 +216,7 @@ async function probeImage(
     return classifyWire('image', await send(IMAGE_RAW_URL), 'raw-url')
 }
 
-/** 一条工具调用探测；中止回 undefined */
+/** 一条工具调用探测；外部中止回 undefined */
 async function probeTool(
     endpoint: EndpointOk,
     model: string,

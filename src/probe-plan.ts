@@ -6,7 +6,7 @@ import { isPlainObject } from '@/shared/types'
 
 /** 探测计划层（纯函数、零 ctx）：把浏览器半发来的未信任载荷校验并展开为待跑清单；两条硬闸配额见 `ProbeLimits` */
 
-/** 一个提供方的探测组：组内顺序执行即「每 provider 单并发」的结构保证 */
+/** 一个实际提供方的探测组：组内调度由 GroupRunner 决定（验证与能力探测串行，探测档位按模型 3 路并发），计划层只负责分组与顺序 */
 export interface ProviderProbeGroup {
     provider: string
     /** 各探测在原数组中的下标（结果按此回填，汇总与顺序无关） */

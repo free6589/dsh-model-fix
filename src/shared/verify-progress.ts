@@ -24,7 +24,7 @@ export type ProbeOutcome =
     | 'unsupported-effort'
     /** 传输层失败且无 HTTP status：端点不可达 */
     | 'unreachable'
-    /** 额度或余额耗尽；按模型的事实，不参与 provider 级短路 */
+    /** 额度或余额耗尽；按模型的事实，不参与渠道级短路 */
     | 'quota'
     /** 凭据缺失或无效 */
     | 'credential'
@@ -37,10 +37,10 @@ export type ProbeOutcome =
     /** 其它厂商侧拒绝（含上游 5xx）：不能断定后续必失败，不短路 */
     | 'other'
 
-/** provider 级失败：命中即整组短路（能断定后续请求必然失败）。`timeout` 还要求是本组首个请求（见 `@/probe-verdict` 的 `providerBlockReason`），不由本类型判定。 */
+/** 逻辑渠道级失败：命中即该渠道剩余请求短路（能断定后续请求必然失败）。`timeout` 还要求是该渠道首个请求，且没有同渠道其它请求先完成（见 `@/probe-verdict` 的 `providerBlockReason`），不由本类型判定。 */
 export type ProviderBlockReason = 'unreachable' | 'credential' | 'timeout'
 
-/** 该失败单看自身是否就否定整个提供方（与请求内容无关、换个模型照样过不去）。 */
+/** 该失败单看自身是否就否定整个逻辑渠道（与请求内容无关、换个模型照样过不去）。 */
 export function isProviderBlocking(outcome: ProbeOutcome): outcome is Exclude<ProviderBlockReason, 'timeout'> {
     return outcome === 'unreachable' || outcome === 'credential'
 }
@@ -61,7 +61,7 @@ export interface VerifyFailureFacts {
 
 /**
  * 单条探测明细：一个「提供方 / 模型 / 推理级别」及其结论，调用方可据此做后续操作，不必再回解析统计值。
- * 只含实际发出的探测；被短路掉的从未发出——哪几条没跑由逐提供方的 `planned` 与 `probed` 之差给出（短路以整组为单位）。
+ * 只含实际发出的探测；被短路掉的从未发出——哪几条没跑由逐逻辑渠道的 `planned` 与 `probed` 之差给出（短路以逻辑渠道为单位）。
  */
 export interface VerifyProbeResult {
     provider: string
@@ -94,21 +94,21 @@ export interface ProviderProbeOutcome extends ProviderProbeSegment {
     segments?: readonly ProviderProbeSegment[]
 }
 
-/** 单个提供方的验证结论（逐提供方可见） */
+/** 单个逻辑渠道的验证结论（逐提供方可见；聚合器按模型 ID 首段拆成多条） */
 export interface VerifyProviderReport {
     provider: string
     /** 端点可达：全程未出现传输层失败 */
     reachable: boolean
     /** 凭据有效：可达且全程未出现凭据类失败（从未可达时不作断言）；额度耗尽不否定 key */
     keyValid: boolean
-    /** 整组是否因 provider 级失败被短路 */
+    /** 该逻辑渠道是否因渠道级失败被短路 */
     skipped: boolean
     blockedBy: ProviderBlockReason | undefined
-    /** 该组计划验过的模型数（按「提供方 / 模型」去重），即用户勾了几个 */
+    /** 该逻辑渠道计划验过的模型数（按「提供方 / 模型」去重） */
     tested: number
-    /** 该组内可用模型数（按「提供方 / 模型」去重） */
+    /** 该逻辑渠道内可用模型数（按「提供方 / 模型」去重） */
     models: number
-    /** 该组内可用档位数 */
+    /** 该逻辑渠道内可用档位数 */
     efforts: number
     /** 判定「档位不支持」的请求数：与其它失败分开计数 */
     unsupported: number
@@ -200,7 +200,7 @@ export type VerifyProgressFrame =
     | { type: 'opened'; total: number }
     /**
      * 一条探测出结果。`total` 是计划条目数，`done` 是已了结的条目数（被短路未发出的计入），故 `done ≤ total`。
-     * `skipped` 在该结论短路了后续请求时出现，值为未发出的条数；`skippedReason` 标明因提供方级失败而未派发的请求原因；`effort` 缺省即不带档位的模型级结论。
+     * `skipped` 在该结论短路了后续请求时出现，值为未发出的条数；`skippedReason` 标明因渠道级失败而未派发的请求原因；`effort` 缺省即不带档位的模型级结论。
      */
     | {
         type: 'probed'
@@ -210,7 +210,7 @@ export type VerifyProgressFrame =
         outcome: ProbeOutcome
         skipped?: number
         skippedReason?: ProviderBlockReason
-        /** 由模型 ID 前缀推导的逻辑渠道；用于让 provider 级失败记录显示到正确的渠道。 */
+        /** 由模型 ID 前缀推导的逻辑渠道；用于让渠道级失败记录显示到正确的渠道。 */
         route?: string
         done: number
         total: number

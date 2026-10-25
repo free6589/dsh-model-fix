@@ -1,12 +1,12 @@
 // src/probe.ts 与 src/fill.ts 用例：预声明 → 逐档探测 → 收敛写回的整条链（档位不支持的两条件判据、
-// 与档位无关的失败（额度耗尽，及本功能自有的限流）短到模型尾而「参数不正确」不短、provider 级短路（含本组首个请求超时即短整组）、未跑完即还原、关自动写入整轮还原、剔除不支持、写回范围只认冻结的候选清单、帧序列与终帧里的写回统计）
+// 与档位无关的失败（额度耗尽，及本功能自有的限流）短到模型尾而「参数不正确」不短、渠道级短路（含本渠道首个请求超时、在途请求可完成、未派发条目合并一帧）、未跑完即还原、关自动写入整轮还原、剔除不支持、写回范围只认冻结的候选清单、帧序列与终帧里的写回统计）
 import type { Context } from '@deepseek-ai/cordis'
 import type { LlmRuntime } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm/types'
 import { probeAndFill } from '@/probe'
 import { planEffortApply, declaredEffortsOf } from '@/fill'
 import { API_NS, EFFORT_LEVELS } from '@/shared/constants'
-import type { VerifyProgressFrame } from '@/shared/verify-progress'
+import type { VerifyProbedFrame, VerifyProgressFrame } from '@/shared/verify-progress'
 import { makeStubCtx } from '@test/ctx'
 import { check, stable } from '@test/helper'
 
@@ -19,6 +19,10 @@ const ok = (): readonly StreamChunk[] => [BLOCK_START as unknown as StreamChunk,
 /** 宿主归一出的中止终帧（`signal?.aborted || code === 'ABORTED'` → `aborted`） */
 const finishAborted = (): readonly StreamChunk[] =>
     [{ type: 'finish', reason: { kind: 'aborted', failure: { code: 'ABORTED', message: '文案随便写' } } } as unknown as StreamChunk]
+
+/** 只取 probed 帧：进度帧是联合类型，filter 的布尔谓词不会自动收窄 */
+const probedFramesOf = (frames: readonly VerifyProgressFrame[]): VerifyProbedFrame[] =>
+    frames.filter((frame): frame is VerifyProbedFrame => frame.type === 'probed')
 
 /** 探测的请求计划：已声明 off 的模型发满七档，未声明的不发 off（与浏览器半 probeTargetsOf 同形） */
 const target = (provider: unknown, model: unknown, hasOff = false) => ({
@@ -228,6 +232,13 @@ export async function run(): Promise<void> {
             && calls.filter((call) => call.startsWith('bifrost/freelane/')).every((call) => call.endsWith('@minimal')),
             { reports: summary.providers.map((item) => item.provider), calls, frames: frames.filter((frame) => frame.type === 'probed' && frame.skippedReason !== undefined) },
         )
+        const freelaneSkips = probedFramesOf(frames).filter((frame) => frame.route === 'freelane' && frame.skippedReason === 'unreachable')
+        check(
+            '聚合器：同一渠道的未派发条目合并为一帧，skipped 总数等于 planned − probed',
+            freelaneSkips.length === 1
+            && (freelaneSkips[0]?.skipped ?? 0) === (freelane?.planned ?? 0) - (freelane?.probed ?? 0),
+            { skips: freelaneSkips, freelane },
+        )
     }
     {
         // 首请求超时也按逻辑渠道隔离：另一个渠道已成功不能掩盖 freelane 自身的首请求超时。
@@ -400,7 +411,7 @@ export async function run(): Promise<void> {
         )
     }
     {
-        // provider 级失败短路整组：该组剩余条数一条都不发，被短路的模型不产生可用结论
+        // 渠道级失败后不再派发新请求：已在途的并行模型请求可完成，未派发的条目合并成一帧
         const ctx = ctxOf()
         const frames: VerifyProgressFrame[] = []
         const { llm, calls } = stub({ 'm1@minimal': [finishError('TRANSPORT')] })
@@ -412,6 +423,14 @@ export async function run(): Promise<void> {
             { calls, report: summary.providers[0] },
         )
         check('因端点不可达而跳过的未派发请求明确带上跳过原因，而不是伪装成用户中止', frames.some((frame) => frame.type === 'probed' && frame.skippedReason === 'unreachable' && (frame.skipped ?? 0) > 0), frames.filter((frame) => frame.type === 'probed'))
+        const unreachableSkips = probedFramesOf(frames).filter((frame) => frame.skippedReason === 'unreachable')
+        check(
+            '渠道级短路：未派发条目合并为一帧，done 追平 total',
+            unreachableSkips.length === 1
+            && (unreachableSkips[0]?.skipped ?? 0) === summary.planned - summary.probed
+            && probedFramesOf(frames).at(-1)?.done === summary.planned,
+            { skips: unreachableSkips, planned: summary.planned, probed: summary.probed, frames },
+        )
         // 两个模型都没跑完 ⇒ 原样还原预声明之前的档位表（m1 无字段、m2 回到 off+high）
         check(
             '没跑完的模型原样还原：m1 字段不出现、m2 回到预声明之前的两档',

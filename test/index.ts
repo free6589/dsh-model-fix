@@ -1,6 +1,7 @@
 // 测试入口：依次执行各模块用例并汇总退出码
 import { run as runCatalog } from '@test/catalog.test'
 import { run as runClientModel } from '@test/client-model.test'
+import { run as runCardRecords } from '@test/card-records.test'
 import { run as runCompat } from '@test/compat.test'
 import { run as runConfig } from '@test/config.test'
 import { run as runEffort } from '@test/effort.test'
@@ -32,6 +33,8 @@ section('catalog.test.ts')
 runCatalog()
 section('client-model.test.ts')
 runClientModel()
+section('card-records.test.ts')
+runCardRecords()
 section('compat.test.ts')
 runCompat()
 section('config.test.ts')

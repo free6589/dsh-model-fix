@@ -68,7 +68,7 @@ export async function probeOnce(
         while (true) {
             const step = await Promise.race([iterator.next(), giveUp])
             if (step === 'give-up') {
-                // 外部中止优先：用户按的停止不是失败，不能入账、更不能据此短整组
+                // 外部中止优先：用户按的停止不是失败，不能入账、更不能据此短该渠道
                 return signal.aborted ? { outcome: 'aborted', failure: undefined } : { outcome: 'timeout', failure: undefined }
             }
             if (step.done) break
@@ -115,7 +115,7 @@ interface ProbeFrameProgress {
     settled: number
     /** 因短路而未发出的条数；无则缺省 */
     skipped?: number
-    /** 被提供方级故障短路时，说明未发请求的原因；无则缺省 */
+    /** 被渠道级故障短路时，说明未发请求的原因；无则缺省 */
     skippedReason?: ProviderBlockReason
     /** 聚合器内由模型 ID 前缀推导的逻辑渠道；只影响展示与分组统计，不改实际请求。 */
     route?: string

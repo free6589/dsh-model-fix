@@ -1,5 +1,5 @@
 /**
- * 「探测档位」的 Node 半执行器：把候选档位**临时预声明**进模型配置 → 逐档各发一次最小请求 →
+ * 「探测档位」的 Node 半执行器：把候选档位**临时预声明**进模型配置 → 逐档各发一次最小请求（同一网关最多 3 条模型链并行，模型内档位串行） →
  * 按结论**收敛**成最终档位表并写回。全过程只由用户主动发起，在途全程持有事件流守卫。
  * 设计裁决见 docs/decisions.md「探测档位」。
  */
@@ -30,7 +30,6 @@ const PROBE_MODEL_CONCURRENCY = 3
 function targetKey(provider: string, model: string): string {
     return JSON.stringify([provider, model])
 }
-
 
 /** 同一实际 provider（网关）最多三条模型链并行；每模型档位严格串行，失败短路只作用于模型前缀对应的逻辑渠道。 */
 const runProbeGroup: GroupRunner = async (
@@ -84,6 +83,10 @@ const runProbeGroup: GroupRunner = async (
     const results = new Array<VerifyProbeResult | undefined>(group.probes.length)
     const usable = new Set<string>()
     let nextChain = 0
+    // 渠道级短路后，未派发的条目按渠道合并成一帧。逐模型各发一帧会在记录区刷出几十条同文行，
+    // 且这些条目根本没发过请求，没有按模型展示的信息量。
+    type SkippedRoute = { count: number; sample: IndexedProbe }
+    const skippedByRoute = new Map<string, SkippedRoute>()
 
     const runChain = async (chain: readonly IndexedProbe[]): Promise<void> => {
         const firstItem = chain[0]
@@ -94,14 +97,15 @@ const runProbeGroup: GroupRunner = async (
         let index = 0
         while (index < chain.length) {
             if (signal.aborted) return
-            // 同一逻辑渠道已确认 provider 级失败：只跳过该渠道剩余请求，其他渠道继续探测。
+            // 同一逻辑渠道已确认渠道级失败：只跳过该渠道剩余请求，其他渠道继续探测。
             if (routeState.blockedBy !== undefined) {
-                const skipped = chain.length - index
-                emitProbe(
-                    chain[index].probe,
-                    { outcome: 'aborted', failure: undefined },
-                    { settled: skipped, skipped, skippedReason: routeState.blockedBy, ...(routeState.provider === group.provider ? {} : { route: routeState.provider }) },
-                )
+                const remaining = chain.length - index
+                const accumulated = skippedByRoute.get(routeState.provider)
+                if (accumulated === undefined) {
+                    skippedByRoute.set(routeState.provider, { count: remaining, sample: chain[index] })
+                } else {
+                    accumulated.count += remaining
+                }
                 return
             }
 
@@ -139,7 +143,6 @@ const runProbeGroup: GroupRunner = async (
             let skipped = 0
             if (blockReason !== undefined) {
                 routeState.blockedBy ??= blockReason
-                skipped = chain.length - index - 1
             } else if (shouldSkipModelTail(outcome, verdict.failure) || outcome === 'rate-limit') {
                 skipped = chain.length - index - 1
             }
@@ -160,6 +163,20 @@ const runProbeGroup: GroupRunner = async (
             if (chain !== undefined) await runChain(chain)
         }
     }))
+
+    // 外部中止不发帧；正常收尾时按规划顺序把各渠道的未派发条目补成一帧，done 才能追平 total。
+    if (!signal.aborted) {
+        for (const [route, state] of routes) {
+            const skipped = skippedByRoute.get(route)
+            if (skipped === undefined || state.blockedBy === undefined) continue
+            emitProbe(skipped.sample.probe, { outcome: 'aborted', failure: undefined }, {
+                settled: skipped.count,
+                skipped: skipped.count,
+                skippedReason: state.blockedBy,
+                ...(route === group.provider ? {} : { route }),
+            })
+        }
+    }
 
     const allResults = results.filter((item): item is VerifyProbeResult => item !== undefined)
     const models = new Set<string>()

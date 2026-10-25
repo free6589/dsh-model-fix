@@ -1,5 +1,5 @@
 // src/probe-caps.ts 的 probeCapabilities 编排用例（带桩全链路）：帧序列、三态汇总、data URI→raw URL 回退、
-// 401/403 provider 级短路、方言/凭据短路不发请求、写回只动 input（自动写入关=只算不写、剔除不支持=删键）、
+// 401/403 渠道级短路、方言/凭据短路不发请求、写回只动 input（自动写入关=只算不写、剔除不支持=删键）、
 // unknown 零写回、中止不写回不发终帧。fetch 桩先例 test/refresh.test.ts；真实网络不进 test/
 import type { Context } from '@deepseek-ai/cordis'
 import { probeCapabilities, IMAGE_RAW_URL } from '@/probe-caps'

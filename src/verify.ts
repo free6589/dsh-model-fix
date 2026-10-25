@@ -14,7 +14,7 @@ import { logicalProviderOf } from '@/probe-route'
 /** 验证请求不合法时的报错文案（入参来自浏览器半，一律按不可信输入校验） */
 const VERIFY_REJECT_MESSAGE = `${PLUGIN_NAME}: 验证请求不合法（模型条目取值越界）`
 
-/** 顺序跑完一组验证请求；provider 级失败只短路同一逻辑渠道，其它渠道仍继续。 */
+/** 顺序跑完一组验证请求；渠道级失败只短路同一逻辑渠道，其它渠道仍继续。 */
 const runGroup: GroupRunner = async (
     llm: Pick<LlmRuntime, 'stream'>,
     group: ProviderProbeGroup,
