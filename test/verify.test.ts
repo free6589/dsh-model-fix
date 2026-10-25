@@ -443,6 +443,36 @@ export async function run(): Promise<void> {
         )
     }
     {
+        // 同一真实 provider 下按模型首段分逻辑渠道：freelane 不可达不能短 tokenrhythm / wb。
+        const frames: VerifyProgressFrame[] = []
+        const { llm, calls } = stub({ 'bifrost/freelane/m1': [finishError('TRANSPORT')] })
+        const summary = await verifyModels(llm, {
+            models: [
+                entry('bifrost', 'freelane/m1'),
+                entry('bifrost', 'tokenrhythm/m1'),
+                entry('bifrost', 'freelane/m2'),
+                entry('bifrost', 'wb/cn:model'),
+            ],
+        }, { onProgress: (frame) => { frames.push(frame) } })
+        const freelane = summary.providers.find((report) => report.provider === 'freelane')
+        const tokenrhythm = summary.providers.find((report) => report.provider === 'tokenrhythm')
+        const wb = summary.providers.find((report) => report.provider === 'wb')
+        check(
+            'verifyModels 聚合器渠道隔离：只跳过 freelane，tokenrhythm 与 wb 仍出请求并正常汇总',
+            stable(calls) === stable(['bifrost/freelane/m1', 'bifrost/tokenrhythm/m1', 'bifrost/wb/cn:model'])
+            && freelane !== undefined && freelane.blockedBy === 'unreachable' && freelane.planned === 2 && freelane.probed === 1
+            && tokenrhythm !== undefined && tokenrhythm.blockedBy === undefined && tokenrhythm.probed === 1
+            && wb !== undefined && wb.blockedBy === undefined && wb.probed === 1
+            && summary.planned === 4 && summary.probed === 3,
+            { calls, providers: summary.providers, planned: summary.planned, probed: summary.probed },
+        )
+        check(
+            'verifyModels 被跳过的逻辑渠道帧包含 route 与真实短路原因',
+            frames.some((frame) => frame.type === 'probed' && frame.route === 'freelane' && frame.skippedReason === 'unreachable' && frame.skipped === 1),
+            frames.filter((frame) => frame.type === 'probed'),
+        )
+    }
+    {
         let threw = false
         try {
             await verifyModels(stub({}).llm, { models: [entry('a', 'm', ['turbo'])] })
@@ -574,12 +604,17 @@ export async function run(): Promise<void> {
         const summary = await verifyModels(llm, { models: [entry('a', 'm1'), entry('a', 'm2')] }, {
             onProgress: (frame) => { frames.push(frame) },
         })
+        const probedFrames = frames.filter((frame) => frame.type === 'probed')
         check(
-            'verifyModels 上游中止不记账但继续验后续模型',
+            'verifyModels 上游中止不入结果但继续验证，进度仍结算至 total',
             calls.length === 2 && summary.probed === 1 && summary.planned === 2 && summary.models === 1
             && stable(summary.results) === stable([
                 { provider: 'a', model: 'm2', effort: undefined, outcome: 'usable', failure: undefined },
-            ]),
+            ])
+            && probedFrames.length === 2
+            && probedFrames[0].type === 'probed' && probedFrames[0].outcome === 'aborted' && probedFrames[0].done === 1
+            && probedFrames[1].type === 'probed' && probedFrames[1].done === 2
+            && frames.at(-1)?.type === 'done',
             { calls, frames, summary },
         )
     }
