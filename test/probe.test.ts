@@ -485,14 +485,21 @@ export async function run(): Promise<void> {
         // 上游自己报 ABORTED 而我们并未中止：不入账但不短档位尾，后面照探；
         // 少了这一条即 probed < planned，该模型被既有「没跑满即还原」挡住，半截结论不写回
         const ctx = ctxOf()
+        const frames: VerifyProgressFrame[] = []
         const { llm, calls } = stub({ 'm1@low': finishAborted() })
-        const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1')] })
+        const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1')] }, {
+            onProgress: (frame) => { frames.push(frame) },
+        })
+        const probedFrames = frames.filter((frame) => frame.type === 'probed')
         check(
-            '上游中止不入账但不短档位尾：后续档位照探，且该模型按「没跑满」还原',
+            '上游中止不入结果、不短档位尾，但进度结算完整；该模型仍按「没跑满」还原',
             calls.length === 6 && summary.results.every((item) => item.outcome !== 'aborted')
             && summary.usableEfforts.every((item) => item.effort !== 'low')
-            && effortsOf(ctx, 'acme', 'm1') === undefined && summary.fill?.models === 0,
-            { calls, results: summary.results, efforts: effortsOf(ctx, 'acme', 'm1'), fill: summary.fill },
+            && effortsOf(ctx, 'acme', 'm1') === undefined && summary.fill?.models === 0
+            && probedFrames.length === 6 && probedFrames.some((frame) => frame.outcome === 'aborted')
+            && probedFrames.at(-1)?.type === 'probed' && probedFrames.at(-1)?.done === 6
+            && frames.at(-1)?.type === 'done',
+            { calls, probedFrames, results: summary.results, efforts: effortsOf(ctx, 'acme', 'm1'), fill: summary.fill },
         )
     }
     {
