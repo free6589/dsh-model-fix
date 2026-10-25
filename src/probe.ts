@@ -100,7 +100,7 @@ const runProbeGroup: GroupRunner = async (
                 emitProbe(
                     chain[index].probe,
                     { outcome: 'aborted', failure: undefined },
-                    { settled: skipped, skipped, skippedReason: routeState.blockedBy, route: routeState.provider },
+                    { settled: skipped, skipped, skippedReason: routeState.blockedBy, ...(routeState.provider === group.provider ? {} : { route: routeState.provider }) },
                 )
                 return
             }
@@ -113,7 +113,7 @@ const runProbeGroup: GroupRunner = async (
             // 用户中止由整轮信号控制；上游主动中止没有结论，但仍结算这一条进度，避免 done 永远落后于 total。
             if (verdict.outcome === 'aborted') {
                 if (signal.aborted) return
-                emitProbe(item.probe, verdict, { settled: 1, route: routeState.provider })
+                emitProbe(item.probe, verdict, { settled: 1, ...(routeState.provider === group.provider ? {} : { route: routeState.provider }) })
                 index += 1
                 continue
             }
