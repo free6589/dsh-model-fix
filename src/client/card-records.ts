@@ -46,12 +46,12 @@ export function verifyLineOf(frame: VerifyProbedFrame, t: TranslateNS<'settings.
     // 这类帧是“未派发”的进度占位，不是请求被中止；显示真正触发短路的提供方原因。
     if (frame.skippedReason !== undefined) {
         const reason = t(OUTCOME_KEYS[frame.skippedReason])
-        const line = t('verifyLineProvider', { provider: frame.provider, result: reason })
+        const line = t('verifyLineProvider', { provider: frame.route ?? frame.provider, result: reason })
         return `${line}${t('verifySkipped', { count: String(frame.skipped ?? 0) })}`
     }
     const result = t(OUTCOME_KEYS[frame.outcome])
     const line = isProviderBlocking(frame.outcome)
-        ? t('verifyLineProvider', { provider: frame.provider, result })
+        ? t('verifyLineProvider', { provider: frame.route ?? frame.provider, result })
         : frame.effort === undefined
             ? t('verifyLinePlain', { provider: frame.provider, model: frame.model, result })
             : t('verifyLine', { provider: frame.provider, model: frame.model, effort: frame.effort, result })

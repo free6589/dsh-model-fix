@@ -179,6 +179,75 @@ export async function run(): Promise<void> {
         )
     }
     {
+        // 聚合器的实际 provider 仍是 bifrost；模型 ID 首段分别作为逻辑渠道，短路不能跨渠道传播。
+        const ctx = ctxOf({
+            providers: {
+                bifrost: {
+                    models: [
+                        { id: 'freelane/deepseek-v4.1-flash-free' },
+                        { id: 'freelane/other-model' },
+                        { id: 'tokenrhythm/deepseek-v4-flash' },
+                        { id: 'wb/cn:deepseek-v4.1-flash' },
+                    ],
+                },
+            },
+        })
+        const frames: VerifyProgressFrame[] = []
+        const { llm, calls } = stub({
+            'freelane/deepseek-v4.1-flash-free@minimal': [finishError('TRANSPORT')],
+        })
+        const summary = await probeAndFill(
+            ctx as unknown as Context,
+            llm,
+            {
+                models: [
+                    target('bifrost', 'freelane/deepseek-v4.1-flash-free'),
+                    target('bifrost', 'freelane/other-model'),
+                    target('bifrost', 'tokenrhythm/deepseek-v4-flash'),
+                    target('bifrost', 'wb/cn:deepseek-v4.1-flash'),
+                ],
+            },
+            { onProgress: (frame) => { frames.push(frame) } },
+        )
+        const freelane = summary.providers.find((item) => item.provider === 'freelane')
+        const tokenrhythm = summary.providers.find((item) => item.provider === 'tokenrhythm')
+        const wb = summary.providers.find((item) => item.provider === 'wb')
+        check(
+            '聚合器：freelane 的网络错误只短路 freelane，tokenrhythm 与 wb 继续完成',
+            freelane?.blockedBy === 'unreachable' && freelane.planned === 12 && freelane.probed < freelane.planned
+            && tokenrhythm?.blockedBy === undefined && tokenrhythm.probed === tokenrhythm.planned
+            && wb?.blockedBy === undefined && wb.probed === wb.planned
+            && summary.probed === calls.length && summary.planned === 24,
+            { reports: summary.providers, called: calls.length, planned: summary.planned, probed: summary.probed },
+        )
+        check(
+            'wb/cn:model 简单归到 wb；被跳过的 freelane 请求明确显示 freelane 原因',
+            wb !== undefined
+            && calls.some((call) => call.startsWith('bifrost/wb/cn:deepseek-v4.1-flash@'))
+            && frames.some((frame) => frame.type === 'probed' && frame.route === 'freelane' && frame.skippedReason === 'unreachable')
+            && calls.filter((call) => call.startsWith('bifrost/freelane/')).every((call) => call.endsWith('@minimal')),
+            { reports: summary.providers.map((item) => item.provider), calls, frames: frames.filter((frame) => frame.type === 'probed' && frame.skippedReason !== undefined) },
+        )
+    }
+    {
+        // 适配器的 stream() 可能在返回迭代器前同步抛错；此时应按单次 other 处理，不得让整轮崩掉。
+        const ctx = ctxOf()
+        let calls = 0
+        const llm = {
+            stream: () => {
+                calls++
+                throw new Error('synchronous adapter failure')
+            },
+        } as unknown as Pick<LlmRuntime, 'stream'>
+        const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1')] })
+        check(
+            'stream() 同步抛错按 other 结算并继续完成整轮',
+            calls === 6 && summary.planned === 6 && summary.probed === 6
+            && summary.results.every((result) => result.outcome === 'other'),
+            { calls, planned: summary.planned, probed: summary.probed, outcomes: summary.results.map((item) => item.outcome) },
+        )
+    }
+    {
         // 剔除不支持：off 已跑通、low 被判参数不正确 ⇒ low 判「不支持」并**从原有档位里剔掉**。
         // 这正是两个开关的分野：关着时 low 只被记录，配置里原样保留
         const ctx = ctxOf()

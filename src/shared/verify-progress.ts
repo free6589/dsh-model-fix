@@ -75,18 +75,23 @@ export interface VerifyProbeResult {
     cap?: CapProbeVerdict
 }
 
-/** 一个提供方的验证结论：逐条明细 + 短路情况（由 Node 半执行器产出，供汇报函数消费）。 */
-export interface ProviderProbeOutcome {
+/** 单个逻辑提供方（或聚合器子渠道）的汇报输入：逐条明细 + 该组短路情况。 */
+export interface ProviderProbeSegment {
     provider: string
-    /** 与该组探测请求清单前缀对齐：短路时长度小于 planned */
+    /** 实际发出请求的结论；被短路的请求不在明细里 */
     results: VerifyProbeResult[]
     blockedBy: ProviderBlockReason | undefined
     /** 计划请求数 */
     planned: number
     /** 计划里带档位的条目数（验证恒为 0） */
     plannedEfforts: number
-    /** 计划验过的模型数（按「提供方 / 模型」去重）：取自计划而非明细（被短路的模型可能不在明细里） */
+    /** 计划验过的模型数（按逻辑提供方 / 模型去重） */
     tested: number
+}
+
+/** 一个实际 provider（可能是聚合器）的验证结论。segments 存在时，统计报告按逻辑渠道拆分；results 仍是整个实际 provider 的明细。 */
+export interface ProviderProbeOutcome extends ProviderProbeSegment {
+    segments?: readonly ProviderProbeSegment[]
 }
 
 /** 单个提供方的验证结论（逐提供方可见） */
@@ -205,6 +210,8 @@ export type VerifyProgressFrame =
         outcome: ProbeOutcome
         skipped?: number
         skippedReason?: ProviderBlockReason
+        /** 由模型 ID 前缀推导的逻辑渠道；用于让 provider 级失败记录显示到正确的渠道。 */
+        route?: string
         done: number
         total: number
         /** 能力探测的三态结论；验证与探测档位的帧缺省（`outcome` 仍是其唯一结论轴） */
@@ -253,6 +260,7 @@ function isProgressFrame(value: unknown): value is VerifyProgressFrame {
             && (value.effort === undefined || typeof value.effort === 'string')
             && (value.skipped === undefined || typeof value.skipped === 'number')
             && (value.skippedReason === undefined || value.skippedReason === 'unreachable' || value.skippedReason === 'credential' || value.skippedReason === 'timeout')
+            && (value.route === undefined || typeof value.route === 'string')
             && (value.cap === undefined || isCapVerdict(value.cap))
     }
     if (value.type === 'failed') return typeof value.message === 'string'
