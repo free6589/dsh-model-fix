@@ -195,7 +195,7 @@ export type VerifyProgressFrame =
     | { type: 'opened'; total: number }
     /**
      * 一条探测出结果。`total` 是计划条目数，`done` 是已了结的条目数（被短路未发出的计入），故 `done ≤ total`。
-     * `skipped` 在该结论短路了后续请求时出现，值为未发出的条数；`effort` 缺省即不带档位的模型级结论。
+     * `skipped` 在该结论短路了后续请求时出现，值为未发出的条数；`skippedReason` 标明因提供方级失败而未派发的请求原因；`effort` 缺省即不带档位的模型级结论。
      */
     | {
         type: 'probed'
@@ -204,6 +204,7 @@ export type VerifyProgressFrame =
         effort: string | undefined
         outcome: ProbeOutcome
         skipped?: number
+        skippedReason?: ProviderBlockReason
         done: number
         total: number
         /** 能力探测的三态结论；验证与探测档位的帧缺省（`outcome` 仍是其唯一结论轴） */
@@ -251,6 +252,7 @@ function isProgressFrame(value: unknown): value is VerifyProgressFrame {
             && typeof value.outcome === 'string' && typeof value.done === 'number' && typeof value.total === 'number'
             && (value.effort === undefined || typeof value.effort === 'string')
             && (value.skipped === undefined || typeof value.skipped === 'number')
+            && (value.skippedReason === undefined || value.skippedReason === 'unreachable' || value.skippedReason === 'credential' || value.skippedReason === 'timeout')
             && (value.cap === undefined || isCapVerdict(value.cap))
     }
     if (value.type === 'failed') return typeof value.message === 'string'
