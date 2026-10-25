@@ -126,6 +126,55 @@ export async function run(): Promise<void> {
         check('清单外的提供方不预声明不写回（键整个不出现）', modelsOf(ctx, 'lab')[0].reasoningEfforts === undefined, modelsOf(ctx, 'lab'))
     }
     {
+        // 同一提供方的不同模型并行，但每个模型自身的推理档位不能重叠。
+        const api = {
+            providers: {
+                acme: {
+                    models: Array.from({ length: 4 }, (_, index) => ({ id: `m${index + 1}`, contextWindow: 128000 })),
+                },
+            },
+        }
+        const ctx = ctxOf(api, { 'version-7': { excludes: [] } })
+        const activeByModel = new Map<string, number>()
+        const calls: string[] = []
+        let active = 0
+        let maxActive = 0
+        let maxForOneModel = 0
+        const llm = {
+            stream: (options: {
+                provider: string
+                model: string
+                reasoningEffort?: string
+                messages: readonly { role: string; content: readonly { type: 'text'; text: string }[] }[]
+            }) => {
+                const tag = `${options.model}${options.reasoningEffort === undefined ? '' : `@${options.reasoningEffort}`}`
+                calls.push(`${options.provider}/${tag}`)
+                return (async function* () {
+                    const modelActive = (activeByModel.get(options.model) ?? 0) + 1
+                    activeByModel.set(options.model, modelActive)
+                    active += 1
+                    maxActive = Math.max(maxActive, active)
+                    maxForOneModel = Math.max(maxForOneModel, modelActive)
+                    await new Promise<void>((resolve) => setTimeout(resolve, 5))
+                    active -= 1
+                    activeByModel.set(options.model, modelActive - 1)
+                    yield BLOCK_START as unknown as StreamChunk
+                    yield FINISH_STOP as unknown as StreamChunk
+                })()
+            },
+        } as unknown as Pick<LlmRuntime, 'stream'>
+        const summary = await probeAndFill(
+            ctx as unknown as Context,
+            llm,
+            { models: Array.from({ length: 4 }, (_, index) => target('acme', `m${index + 1}`)) },
+        )
+        check(
+            '同一提供方最多三模型并行、单模型等级串行',
+            calls.length === 24 && summary.probed === 24 && maxActive === 3 && maxForOneModel === 1,
+            { calls: calls.length, probed: summary.probed, maxActive, maxForOneModel },
+        )
+    }
+    {
         // 剔除不支持：off 已跑通、low 被判参数不正确 ⇒ low 判「不支持」并**从原有档位里剔掉**。
         // 这正是两个开关的分野：关着时 low 只被记录，配置里原样保留
         const ctx = ctxOf()
@@ -252,8 +301,8 @@ export async function run(): Promise<void> {
         const { llm, calls } = stub({ 'm1@minimal': [finishError('TRANSPORT')] })
         const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1'), target('acme', 'm2', true)] })
         check(
-            '端点不可达短路整组：只发第一条、skipped 为组内剩余、blockedBy 为 unreachable',
-            calls.length === 1 && summary.probed === 1 && summary.planned === 13
+            '端点不可达后停止派发：并行的另一个模型请求可能已在途，blockedBy 为 unreachable',
+            calls.length === 2 && summary.probed === 2 && summary.planned === 13
             && summary.providers[0].blockedBy === 'unreachable' && !summary.providers[0].reachable,
             { calls, report: summary.providers[0] },
         )
@@ -273,8 +322,8 @@ export async function run(): Promise<void> {
         const { llm, calls } = stub({ 'm1@minimal': [finishError('TIMEOUT')] })
         const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1'), target('acme', 'm2', true)] })
         check(
-            '首个请求超时短整组：只发第一条、blockedBy 记 timeout',
-            calls.length === 1 && summary.probed === 1 && summary.planned === 13
+            '首个发出的请求超时后停止继续派发（已在途请求会收尾），blockedBy 记 timeout',
+            calls.length === 2 && summary.probed === 2 && summary.planned === 13
             // 理由记「超时」而非「不可达」，reachable 也不翻假：超时只是没等到受理，不是传输层失败的证据
             && summary.providers[0].blockedBy === 'timeout' && summary.providers[0].reachable,
             { calls, report: summary.providers[0] },
