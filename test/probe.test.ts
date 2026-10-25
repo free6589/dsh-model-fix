@@ -230,6 +230,37 @@ export async function run(): Promise<void> {
         )
     }
     {
+        // 首请求超时也按逻辑渠道隔离：另一个渠道已成功不能掩盖 freelane 自身的首请求超时。
+        const ctx = ctxOf({
+            providers: {
+                bifrost: {
+                    models: [
+                        { id: 'freelane/deepseek-v4.1-flash-free' },
+                        { id: 'tokenrhythm/deepseek-v4-flash' },
+                    ],
+                },
+            },
+        })
+        const { llm, calls } = stub({
+            'freelane/deepseek-v4.1-flash-free@minimal': [finishError('TIMEOUT')],
+        })
+        const summary = await probeAndFill(ctx as unknown as Context, llm, {
+            models: [
+                target('bifrost', 'freelane/deepseek-v4.1-flash-free'),
+                target('bifrost', 'tokenrhythm/deepseek-v4-flash'),
+            ],
+        })
+        const freelane = summary.providers.find((item) => item.provider === 'freelane')
+        const tokenrhythm = summary.providers.find((item) => item.provider === 'tokenrhythm')
+        check(
+            '聚合器：freelane 的首请求超时只短路 freelane，不受 tokenrhythm 的成功影响',
+            freelane !== undefined && freelane.blockedBy === 'timeout' && freelane.probed === 1 && freelane.planned === 6
+            && tokenrhythm !== undefined && tokenrhythm.blockedBy === undefined && tokenrhythm.probed === 6
+            && summary.probed === calls.length,
+            { reports: summary.providers, calls },
+        )
+    }
+    {
         // 适配器的 stream() 可能在返回迭代器前同步抛错；此时应按单次 other 处理，不得让整轮崩掉。
         const ctx = ctxOf()
         let calls = 0
