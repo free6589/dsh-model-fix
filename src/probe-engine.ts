@@ -6,7 +6,7 @@
 import type { LlmRuntime, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 // LlmFailure 定义在 types 子路径（包根只 import 未再导出）；仅取类型，擦除后不落运行期依赖
 import type { LlmFailure } from '@deepseek-ai/dsh-llm/types'
-import type { ProviderProbeOutcome, VerifyFailureFacts, VerifyProbe, VerifyProbeResult, VerifyProgressFrame, VerifyProviderReport, VerifySummary } from '@/shared/verify-progress'
+import type { ProviderBlockReason, ProviderProbeOutcome, VerifyFailureFacts, VerifyProbe, VerifyProbeResult, VerifyProgressFrame, VerifyProviderReport, VerifySummary } from '@/shared/verify-progress'
 import type { ProviderProbeGroup } from '@/probe-plan'
 import { reportProvider, summarizeProviders } from '@/probe-report'
 import { classifyFailure, type ProbeVerdict } from '@/probe-verdict'
