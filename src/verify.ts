@@ -9,63 +9,119 @@ import { finishRun, probeOnce, runProbeGroups } from '@/probe-engine'
 import type { ProviderProbeGroup } from '@/probe-plan'
 import { VERIFY_LIMITS, planProbeGroups } from '@/probe-plan'
 import { providerBlockReason } from '@/probe-verdict'
+import { logicalProviderOf } from '@/probe-route'
 
 /** 验证请求不合法时的报错文案（入参来自浏览器半，一律按不可信输入校验） */
 const VERIFY_REJECT_MESSAGE = `${PLUGIN_NAME}: 验证请求不合法（模型条目取值越界）`
 
-/** 顺序跑完一组验证请求（组内零并发）：每模型一条请求（不带档位参数）；provider 级失败（端点不通 / 凭据无效 / 首请求超时）短整组；外部中止早停（只断在途请求） */
+/** 顺序跑完一组验证请求；provider 级失败只短路同一逻辑渠道，其它渠道仍继续。 */
 const runGroup: GroupRunner = async (
     llm: Pick<LlmRuntime, 'stream'>,
     group: ProviderProbeGroup,
     signal: AbortSignal,
     emitProbe: ProbeEmitter,
 ): Promise<ProviderProbeOutcome> => {
+    type RouteState = {
+        provider: string
+        results: VerifyProbeResult[]
+        blockedBy: ProviderBlockReason | undefined
+        planned: number
+        plannedEfforts: number
+        models: Set<string>
+        sent: number
+    }
+    const routes = new Map<string, RouteState>()
+    const indexesByRoute = new Map<string, number[]>()
+    group.probes.forEach((probe, index) => {
+        const route = logicalProviderOf(probe.provider, probe.model)
+        let state = routes.get(route)
+        if (state === undefined) {
+            state = {
+                provider: route,
+                results: [],
+                blockedBy: undefined,
+                planned: 0,
+                plannedEfforts: 0,
+                models: new Set<string>(),
+                sent: 0,
+            }
+            routes.set(route, state)
+        }
+        state.planned++
+        if (probe.effort !== undefined) state.plannedEfforts++
+        state.models.add(JSON.stringify([probe.provider, probe.model]))
+        const indexes = indexesByRoute.get(route) ?? []
+        indexes.push(index)
+        indexesByRoute.set(route, indexes)
+    })
+
     const results: VerifyProbeResult[] = []
-    let blockedBy: ProviderBlockReason | undefined
-    // 本组已发出的请求数：provider 级短路要区分「首个请求就超时」与「链路已跑通、只是这一次慢」
-    let sent = 0
+    const skippedIndexes = new Set<number>()
     for (let index = 0; index < group.probes.length; index++) {
         if (signal.aborted) break
+        if (skippedIndexes.has(index)) continue
         const probe = group.probes[index]
+        if (probe === undefined) continue
+        const route = logicalProviderOf(probe.provider, probe.model)
+        const state = routes.get(route)
+        if (state === undefined) continue
+
+        state.sent++
         const verdict = await probeOnce(llm, probe, signal)
-        sent += 1
-        // 中止没有结论：不入明细也不发帧，不能算成「模型不可用」
-        if (verdict.outcome === 'aborted') continue
-        results.push({
+        if (verdict.outcome === 'aborted') {
+            if (signal.aborted) break
+            // 上游主动中止不是用户取消：不入明细、不短路，但必须结算进度。
+            emitProbe(probe, verdict, { settled: 1, route: state.provider })
+            continue
+        }
+
+        const result: VerifyProbeResult = {
             provider: probe.provider,
             model: probe.model,
             effort: probe.effort,
             outcome: verdict.outcome,
             failure: verdict.failure,
-        })
-        // provider 级短路的剩余未发出条数在此算出断到组尾；被跳过的请求不进 results，故 probed 少于 planned
-        let skipped = 0
-        const blockReason = providerBlockReason(verdict.outcome, sent === 1)
-        if (blockReason !== undefined) {
-            blockedBy = blockReason
-            skipped = group.probes.length - index - 1
         }
-        if (skipped > 0) index += skipped
+        results.push(result)
+        state.results.push(result)
+
+        const blockReason = providerBlockReason(verdict.outcome, state.sent === 1)
+        let skipped = 0
+        if (blockReason !== undefined) {
+            state.blockedBy = blockReason
+            const laterIndexes = (indexesByRoute.get(route) ?? []).filter((candidate) => candidate > index && !skippedIndexes.has(candidate))
+            for (const candidate of laterIndexes) skippedIndexes.add(candidate)
+            skipped = laterIndexes.length
+        }
         emitProbe(probe, verdict, {
             settled: 1 + skipped,
-            ...(skipped === 0 ? {} : { skipped }),
+            route: state.provider,
+            ...(skipped === 0 ? {} : { skipped, skippedReason: blockReason }),
         })
-        if (blockedBy !== undefined) break
     }
-    // 计划数 = 该组的验证请求数 = 勾选的模型数
+
     const models = new Set<string>()
     let plannedEfforts = 0
     for (const probe of group.probes) {
         models.add(JSON.stringify([probe.provider, probe.model]))
         if (probe.effort !== undefined) plannedEfforts++
     }
+    const segments = [...routes.values()].map((state) => ({
+        provider: state.provider,
+        results: state.results,
+        blockedBy: state.blockedBy,
+        planned: state.planned,
+        plannedEfforts: state.plannedEfforts,
+        tested: state.models.size,
+    }))
     return {
         provider: group.provider,
         results,
-        blockedBy,
+        blockedBy: undefined,
         planned: group.probes.length,
         plannedEfforts,
         tested: models.size,
+        segments,
     }
 }
 
