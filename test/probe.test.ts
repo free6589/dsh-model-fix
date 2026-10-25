@@ -170,7 +170,11 @@ export async function run(): Promise<void> {
         )
         check(
             '同一提供方最多三模型并行、单模型等级串行',
-            calls.length === 24 && summary.probed === 24 && maxActive === 3 && maxForOneModel === 1,
+            calls.length === 24 && summary.probed === 24 && maxActive === 3 && maxForOneModel === 1
+            && Array.from({ length: 4 }, (_, index) => `m${index + 1}`).every((model) =>
+                stable(calls.filter((call) => call.startsWith(`acme/${model}@`)).map((call) => call.split('@').at(-1)))
+                    === stable(EFFORT_LEVELS.filter((level) => level !== 'off')),
+            ),
             { calls: calls.length, probed: summary.probed, maxActive, maxForOneModel },
         )
     }
@@ -302,7 +306,7 @@ export async function run(): Promise<void> {
         const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1'), target('acme', 'm2', true)] })
         check(
             '端点不可达后停止派发：并行的另一个模型请求可能已在途，blockedBy 为 unreachable',
-            calls.length === 2 && summary.probed === 2 && summary.planned === 13
+            calls.length >= 2 && calls.length <= 3 && summary.probed === calls.length && summary.planned === 13
             && summary.providers[0].blockedBy === 'unreachable' && !summary.providers[0].reachable,
             { calls, report: summary.providers[0] },
         )
@@ -323,7 +327,7 @@ export async function run(): Promise<void> {
         const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1'), target('acme', 'm2', true)] })
         check(
             '首个发出的请求超时后停止继续派发（已在途请求会收尾），blockedBy 记 timeout',
-            calls.length === 2 && summary.probed === 2 && summary.planned === 13
+            calls.length >= 2 && calls.length <= 3 && summary.probed === calls.length && summary.planned === 13
             // 理由记「超时」而非「不可达」，reachable 也不翻假：超时只是没等到受理，不是传输层失败的证据
             && summary.providers[0].blockedBy === 'timeout' && summary.providers[0].reachable,
             { calls, report: summary.providers[0] },
