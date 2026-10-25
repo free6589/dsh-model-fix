@@ -24,7 +24,7 @@ export type ProbeOutcome =
     | 'unsupported-effort'
     /** 传输层失败且无 HTTP status：端点不可达 */
     | 'unreachable'
-    /** 额度或余额耗尽；按模型的事实，不参与 provider 级短路 */
+    /** 额度或余额耗尽；按模型的事实，不参与渠道级短路 */
     | 'quota'
     /** 凭据缺失或无效 */
     | 'credential'
@@ -32,15 +32,15 @@ export type ProbeOutcome =
     | 'rate-limit'
     /** 瞬态：超时；本次没结论 */
     | 'timeout'
-    /** 中止（用户停止 / 关窗 / 断连 / 上游中止）：没结论，不入明细、不发帧、不短路 */
+    /** 中止：没结论、不入明细；外部取消不发帧并终止整轮，上游中止则发无结论进度帧后继续 */
     | 'aborted'
     /** 其它厂商侧拒绝（含上游 5xx）：不能断定后续必失败，不短路 */
     | 'other'
 
-/** provider 级失败：命中即整组短路（能断定后续请求必然失败）。`timeout` 还要求是本组首个请求（见 `@/probe-verdict` 的 `providerBlockReason`），不由本类型判定。 */
+/** 逻辑渠道级失败：命中即该渠道剩余请求短路（能断定后续请求必然失败）。`timeout` 还要求是该渠道首个请求，且没有同渠道其它请求先完成（见 `@/probe-verdict` 的 `providerBlockReason`），不由本类型判定。 */
 export type ProviderBlockReason = 'unreachable' | 'credential' | 'timeout'
 
-/** 该失败单看自身是否就否定整个提供方（与请求内容无关、换个模型照样过不去）。 */
+/** 该失败单看自身是否就否定整个逻辑渠道（与请求内容无关、换个模型照样过不去）。 */
 export function isProviderBlocking(outcome: ProbeOutcome): outcome is Exclude<ProviderBlockReason, 'timeout'> {
     return outcome === 'unreachable' || outcome === 'credential'
 }
@@ -61,7 +61,7 @@ export interface VerifyFailureFacts {
 
 /**
  * 单条探测明细：一个「提供方 / 模型 / 推理级别」及其结论，调用方可据此做后续操作，不必再回解析统计值。
- * 只含实际发出的探测；被短路掉的从未发出——哪几条没跑由逐提供方的 `planned` 与 `probed` 之差给出（短路以整组为单位）。
+ * 只含实际发出的探测；被短路掉的从未发出——哪几条没跑由逐逻辑渠道的 `planned` 与 `probed` 之差给出（短路以逻辑渠道为单位）。
  */
 export interface VerifyProbeResult {
     provider: string
@@ -75,35 +75,40 @@ export interface VerifyProbeResult {
     cap?: CapProbeVerdict
 }
 
-/** 一个提供方的验证结论：逐条明细 + 短路情况（由 Node 半执行器产出，供汇报函数消费）。 */
-export interface ProviderProbeOutcome {
+/** 单个逻辑提供方（或聚合器子渠道）的汇报输入：逐条明细 + 该组短路情况。 */
+export interface ProviderProbeSegment {
     provider: string
-    /** 与该组探测请求清单前缀对齐：短路时长度小于 planned */
+    /** 实际发出请求的结论；被短路的请求不在明细里 */
     results: VerifyProbeResult[]
     blockedBy: ProviderBlockReason | undefined
     /** 计划请求数 */
     planned: number
     /** 计划里带档位的条目数（验证恒为 0） */
     plannedEfforts: number
-    /** 计划验过的模型数（按「提供方 / 模型」去重）：取自计划而非明细（被短路的模型可能不在明细里） */
+    /** 计划验过的模型数（按逻辑提供方 / 模型去重） */
     tested: number
 }
 
-/** 单个提供方的验证结论（逐提供方可见） */
+/** 一个实际 provider（可能是聚合器）的验证结论。segments 存在时，统计报告按逻辑渠道拆分；results 仍是整个实际 provider 的明细。 */
+export interface ProviderProbeOutcome extends ProviderProbeSegment {
+    segments?: readonly ProviderProbeSegment[]
+}
+
+/** 单个逻辑渠道的验证结论（逐提供方可见；聚合器按模型 ID 首段拆成多条） */
 export interface VerifyProviderReport {
     provider: string
     /** 端点可达：全程未出现传输层失败 */
     reachable: boolean
     /** 凭据有效：可达且全程未出现凭据类失败（从未可达时不作断言）；额度耗尽不否定 key */
     keyValid: boolean
-    /** 整组是否因 provider 级失败被短路 */
+    /** 该逻辑渠道是否因渠道级失败被短路 */
     skipped: boolean
     blockedBy: ProviderBlockReason | undefined
-    /** 该组计划验过的模型数（按「提供方 / 模型」去重），即用户勾了几个 */
+    /** 该逻辑渠道计划验过的模型数（按「提供方 / 模型」去重） */
     tested: number
-    /** 该组内可用模型数（按「提供方 / 模型」去重） */
+    /** 该逻辑渠道内可用模型数（按「提供方 / 模型」去重） */
     models: number
-    /** 该组内可用档位数 */
+    /** 该逻辑渠道内可用档位数 */
     efforts: number
     /** 判定「档位不支持」的请求数：与其它失败分开计数 */
     unsupported: number
@@ -187,7 +192,7 @@ export interface VerifySummary {
 }
 
 /**
- * 一次验证运行的进度帧判别联合：先唯一一条 `opened`，随后每完成一条探测发一条 `probed`，最后唯一一条终帧（`done` 或 `failed`）。
+ * 一次验证运行的进度帧判别联合：先唯一一条 `opened`，随后每完成一条探测尝试（包括无结论的上游中止）发一条 `probed`，最后唯一一条终帧（`done` 或 `failed`）。
  * 中途被中止（停止 / 关窗 / 断连）时**不发终帧**——消费方据「流结束却无终帧」得知这轮没跑完。
  */
 export type VerifyProgressFrame =
@@ -195,7 +200,7 @@ export type VerifyProgressFrame =
     | { type: 'opened'; total: number }
     /**
      * 一条探测出结果。`total` 是计划条目数，`done` 是已了结的条目数（被短路未发出的计入），故 `done ≤ total`。
-     * `skipped` 在该结论短路了后续请求时出现，值为未发出的条数；`effort` 缺省即不带档位的模型级结论。
+     * `skipped` 在该结论短路了后续请求时出现，值为未发出的条数；`skippedReason` 标明因渠道级失败而未派发的请求原因；`effort` 缺省即不带档位的模型级结论。
      */
     | {
         type: 'probed'
@@ -204,6 +209,9 @@ export type VerifyProgressFrame =
         effort: string | undefined
         outcome: ProbeOutcome
         skipped?: number
+        skippedReason?: ProviderBlockReason
+        /** 由模型 ID 前缀推导的逻辑渠道；用于让渠道级失败记录显示到正确的渠道。 */
+        route?: string
         done: number
         total: number
         /** 能力探测的三态结论；验证与探测档位的帧缺省（`outcome` 仍是其唯一结论轴） */
@@ -251,6 +259,8 @@ function isProgressFrame(value: unknown): value is VerifyProgressFrame {
             && typeof value.outcome === 'string' && typeof value.done === 'number' && typeof value.total === 'number'
             && (value.effort === undefined || typeof value.effort === 'string')
             && (value.skipped === undefined || typeof value.skipped === 'number')
+            && (value.skippedReason === undefined || value.skippedReason === 'unreachable' || value.skippedReason === 'credential' || value.skippedReason === 'timeout')
+            && (value.route === undefined || typeof value.route === 'string')
             && (value.cap === undefined || isCapVerdict(value.cap))
     }
     if (value.type === 'failed') return typeof value.message === 'string'

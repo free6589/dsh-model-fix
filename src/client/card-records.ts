@@ -28,7 +28,7 @@ export function terminalLabelsOf(t: TranslateNS<'settings.modelFix'>): TerminalL
     }
 }
 
-/** 探测结论→文案键对照；aborted 只占类型位（中止不入账） */
+/** 探测结论→文案键对照；aborted 不入结果明细，但上游主动中止会发进度帧，故仍需文案 */
 const OUTCOME_KEYS: Record<ProbeOutcome, CardKey> = {
     usable: 'verifyOutUsable',
     'unsupported-effort': 'verifyOutUnsupported',
@@ -41,11 +41,17 @@ const OUTCOME_KEYS: Record<ProbeOutcome, CardKey> = {
     other: 'verifyOutOther',
 }
 
-/** 一条探测结论记录行；provider 级失败不带模型与档位，带 skipped 时补剩余条数 */
+/** 一条探测结论记录行；渠道级失败不带模型与档位，带 skipped 时补剩余条数 */
 export function verifyLineOf(frame: VerifyProbedFrame, t: TranslateNS<'settings.modelFix'>): string {
+    // 这类帧是“未派发”的进度占位，不是请求被中止；显示真正触发短路的提供方原因。
+    if (frame.skippedReason !== undefined) {
+        const reason = t(OUTCOME_KEYS[frame.skippedReason])
+        const line = t('verifyLineProvider', { provider: frame.route ?? frame.provider, result: reason })
+        return `${line}${t('verifySkipped', { count: String(frame.skipped ?? 0) })}`
+    }
     const result = t(OUTCOME_KEYS[frame.outcome])
     const line = isProviderBlocking(frame.outcome)
-        ? t('verifyLineProvider', { provider: frame.provider, result })
+        ? t('verifyLineProvider', { provider: frame.route ?? frame.provider, result })
         : frame.effort === undefined
             ? t('verifyLinePlain', { provider: frame.provider, model: frame.model, result })
             : t('verifyLine', { provider: frame.provider, model: frame.model, effort: frame.effort, result })
@@ -53,8 +59,10 @@ export function verifyLineOf(frame: VerifyProbedFrame, t: TranslateNS<'settings.
 }
 
 /** 一条能力探测记录行：一「模型 × 能力」一行，三态文案后附原因（`capReason`）；带 skipped 时补剩余条数。
- * 结论轴是 `cap`（wire 级三态），`frame.outcome` 只是短路与计数的机器账本；无 `cap` 的帧（理论上不出现）回落验证行模板 */
+ * 结论轴是 `cap`（wire 级三态），`frame.outcome` 只是短路与计数的机器账本；无 `cap` 的帧（理论上不出现）回落验证行模板。
+ * `skippedReason` 是渠道级短路的未派发占位（没有真正的能力结论），与验证记录同口径走 provider 行，不拿失败模型的 cap 冒充分结论。 */
 export function capLineOf(frame: VerifyProbedFrame, t: TranslateNS<'settings.modelFix'>): string {
+    if (frame.skippedReason !== undefined) return verifyLineOf(frame, t)
     const cap = frame.cap
     if (cap === undefined) return verifyLineOf(frame, t)
     const verdict = t(cap.result === 'supported' ? 'capSupported' : cap.result === 'unsupported' ? 'capUnsupported' : 'capUnknown')

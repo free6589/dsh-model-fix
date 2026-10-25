@@ -1,12 +1,12 @@
 // src/probe.ts 与 src/fill.ts 用例：预声明 → 逐档探测 → 收敛写回的整条链（档位不支持的两条件判据、
-// 与档位无关的失败（额度耗尽，及本功能自有的限流）短到模型尾而「参数不正确」不短、provider 级短路（含本组首个请求超时即短整组）、未跑完即还原、关自动写入整轮还原、剔除不支持、写回范围只认冻结的候选清单、帧序列与终帧里的写回统计）
+// 与档位无关的失败（额度耗尽，及本功能自有的限流）短到模型尾而「参数不正确」不短、渠道级短路（含本渠道首个请求超时、在途请求可完成、未派发条目合并一帧）、未跑完即还原、关自动写入整轮还原、剔除不支持、写回范围只认冻结的候选清单、帧序列与终帧里的写回统计）
 import type { Context } from '@deepseek-ai/cordis'
 import type { LlmRuntime } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm/types'
 import { probeAndFill } from '@/probe'
 import { planEffortApply, declaredEffortsOf } from '@/fill'
 import { API_NS, EFFORT_LEVELS } from '@/shared/constants'
-import type { VerifyProgressFrame } from '@/shared/verify-progress'
+import type { VerifyProbedFrame, VerifyProgressFrame } from '@/shared/verify-progress'
 import { makeStubCtx } from '@test/ctx'
 import { check, stable } from '@test/helper'
 
@@ -19,6 +19,10 @@ const ok = (): readonly StreamChunk[] => [BLOCK_START as unknown as StreamChunk,
 /** 宿主归一出的中止终帧（`signal?.aborted || code === 'ABORTED'` → `aborted`） */
 const finishAborted = (): readonly StreamChunk[] =>
     [{ type: 'finish', reason: { kind: 'aborted', failure: { code: 'ABORTED', message: '文案随便写' } } } as unknown as StreamChunk]
+
+/** 只取 probed 帧：进度帧是联合类型，filter 的布尔谓词不会自动收窄 */
+const probedFramesOf = (frames: readonly VerifyProgressFrame[]): VerifyProbedFrame[] =>
+    frames.filter((frame): frame is VerifyProbedFrame => frame.type === 'probed')
 
 /** 探测的请求计划：已声明 off 的模型发满七档，未声明的不发 off（与浏览器半 probeTargetsOf 同形） */
 const target = (provider: unknown, model: unknown, hasOff = false) => ({
@@ -124,6 +128,166 @@ export async function run(): Promise<void> {
         )
         // 清单外的提供方整条不动：预声明与收敛都只按清单覆盖，lab 不在清单里
         check('清单外的提供方不预声明不写回（键整个不出现）', modelsOf(ctx, 'lab')[0].reasoningEfforts === undefined, modelsOf(ctx, 'lab'))
+    }
+    {
+        // 同一提供方的不同模型并行，但每个模型自身的推理档位不能重叠。
+        const api = {
+            providers: {
+                acme: {
+                    models: Array.from({ length: 4 }, (_, index) => ({ id: `m${index + 1}`, contextWindow: 128000 })),
+                },
+            },
+        }
+        const ctx = ctxOf(api, { 'version-7': { excludes: [] } })
+        const activeByModel = new Map<string, number>()
+        const calls: string[] = []
+        let active = 0
+        let maxActive = 0
+        let maxForOneModel = 0
+        const llm = {
+            stream: (options: {
+                provider: string
+                model: string
+                reasoningEffort?: string
+                messages: readonly { role: string; content: readonly { type: 'text'; text: string }[] }[]
+            }) => {
+                const tag = `${options.model}${options.reasoningEffort === undefined ? '' : `@${options.reasoningEffort}`}`
+                calls.push(`${options.provider}/${tag}`)
+                return (async function* () {
+                    const modelActive = (activeByModel.get(options.model) ?? 0) + 1
+                    activeByModel.set(options.model, modelActive)
+                    active += 1
+                    maxActive = Math.max(maxActive, active)
+                    maxForOneModel = Math.max(maxForOneModel, modelActive)
+                    await new Promise<void>((resolve) => setTimeout(resolve, 5))
+                    active -= 1
+                    activeByModel.set(options.model, modelActive - 1)
+                    yield BLOCK_START as unknown as StreamChunk
+                    yield FINISH_STOP as unknown as StreamChunk
+                })()
+            },
+        } as unknown as Pick<LlmRuntime, 'stream'>
+        const summary = await probeAndFill(
+            ctx as unknown as Context,
+            llm,
+            { models: Array.from({ length: 4 }, (_, index) => target('acme', `m${index + 1}`)) },
+        )
+        check(
+            '同一提供方最多三模型并行、单模型等级串行',
+            calls.length === 24 && summary.probed === 24 && maxActive === 3 && maxForOneModel === 1
+            && Array.from({ length: 4 }, (_, index) => `m${index + 1}`).every((model) =>
+                stable(calls.filter((call) => call.startsWith(`acme/${model}@`)).map((call) => call.split('@').at(-1)))
+                    === stable(EFFORT_LEVELS.filter((level) => level !== 'off')),
+            ),
+            { calls: calls.length, probed: summary.probed, maxActive, maxForOneModel },
+        )
+    }
+    {
+        // 聚合器的实际 provider 仍是 bifrost；模型 ID 首段分别作为逻辑渠道，短路不能跨渠道传播。
+        const ctx = ctxOf({
+            providers: {
+                bifrost: {
+                    models: [
+                        { id: 'freelane/deepseek-v4.1-flash-free' },
+                        { id: 'freelane/other-model' },
+                        { id: 'tokenrhythm/deepseek-v4-flash' },
+                        { id: 'wb/cn:deepseek-v4.1-flash' },
+                    ],
+                },
+            },
+        })
+        const frames: VerifyProgressFrame[] = []
+        const { llm, calls } = stub({
+            'freelane/deepseek-v4.1-flash-free@minimal': [finishError('TRANSPORT')],
+        })
+        const summary = await probeAndFill(
+            ctx as unknown as Context,
+            llm,
+            {
+                models: [
+                    target('bifrost', 'freelane/deepseek-v4.1-flash-free'),
+                    target('bifrost', 'freelane/other-model'),
+                    target('bifrost', 'tokenrhythm/deepseek-v4-flash'),
+                    target('bifrost', 'wb/cn:deepseek-v4.1-flash'),
+                ],
+            },
+            { onProgress: (frame) => { frames.push(frame) } },
+        )
+        const freelane = summary.providers.find((item) => item.provider === 'freelane')
+        const tokenrhythm = summary.providers.find((item) => item.provider === 'tokenrhythm')
+        const wb = summary.providers.find((item) => item.provider === 'wb')
+        check(
+            '聚合器：freelane 的网络错误只短路 freelane，tokenrhythm 与 wb 继续完成',
+            freelane?.blockedBy === 'unreachable' && freelane.planned === 12 && freelane.probed < freelane.planned
+            && tokenrhythm !== undefined && tokenrhythm.blockedBy === undefined && tokenrhythm.probed === tokenrhythm.planned
+            && wb !== undefined && wb.blockedBy === undefined && wb.probed === wb.planned
+            && summary.probed === calls.length && summary.planned === 24,
+            { reports: summary.providers, called: calls.length, planned: summary.planned, probed: summary.probed },
+        )
+        check(
+            'wb/cn:model 简单归到 wb；被跳过的 freelane 请求明确显示 freelane 原因',
+            wb !== undefined
+            && calls.some((call) => call.startsWith('bifrost/wb/cn:deepseek-v4.1-flash@'))
+            && frames.some((frame) => frame.type === 'probed' && frame.route === 'freelane' && frame.skippedReason === 'unreachable')
+            && calls.filter((call) => call.startsWith('bifrost/freelane/')).every((call) => call.endsWith('@minimal')),
+            { reports: summary.providers.map((item) => item.provider), calls, frames: frames.filter((frame) => frame.type === 'probed' && frame.skippedReason !== undefined) },
+        )
+        const freelaneSkips = probedFramesOf(frames).filter((frame) => frame.route === 'freelane' && frame.skippedReason === 'unreachable')
+        check(
+            '聚合器：同一渠道的未派发条目合并为一帧，skipped 总数等于 planned − probed',
+            freelaneSkips.length === 1
+            && (freelaneSkips[0]?.skipped ?? 0) === (freelane?.planned ?? 0) - (freelane?.probed ?? 0),
+            { skips: freelaneSkips, freelane },
+        )
+    }
+    {
+        // 首请求超时也按逻辑渠道隔离：另一个渠道已成功不能掩盖 freelane 自身的首请求超时。
+        const ctx = ctxOf({
+            providers: {
+                bifrost: {
+                    models: [
+                        { id: 'freelane/deepseek-v4.1-flash-free' },
+                        { id: 'tokenrhythm/deepseek-v4-flash' },
+                    ],
+                },
+            },
+        })
+        const { llm, calls } = stub({
+            'freelane/deepseek-v4.1-flash-free@minimal': [finishError('TIMEOUT')],
+        })
+        const summary = await probeAndFill(ctx as unknown as Context, llm, {
+            models: [
+                target('bifrost', 'freelane/deepseek-v4.1-flash-free'),
+                target('bifrost', 'tokenrhythm/deepseek-v4-flash'),
+            ],
+        })
+        const freelane = summary.providers.find((item) => item.provider === 'freelane')
+        const tokenrhythm = summary.providers.find((item) => item.provider === 'tokenrhythm')
+        check(
+            '聚合器：freelane 的首请求超时只短路 freelane，不受 tokenrhythm 的成功影响',
+            freelane !== undefined && freelane.blockedBy === 'timeout' && freelane.probed === 1 && freelane.planned === 6
+            && tokenrhythm !== undefined && tokenrhythm.blockedBy === undefined && tokenrhythm.probed === 6
+            && summary.probed === calls.length,
+            { reports: summary.providers, calls },
+        )
+    }
+    {
+        // 适配器的 stream() 可能在返回迭代器前同步抛错；此时应按单次 other 处理，不得让整轮崩掉。
+        const ctx = ctxOf()
+        let calls = 0
+        const llm = {
+            stream: () => {
+                calls++
+                throw new Error('synchronous adapter failure')
+            },
+        } as unknown as Pick<LlmRuntime, 'stream'>
+        const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1')] })
+        check(
+            'stream() 同步抛错按 other 结算并继续完成整轮',
+            calls === 6 && summary.planned === 6 && summary.probed === 6
+            && summary.results.every((result) => result.outcome === 'other'),
+            { calls, planned: summary.planned, probed: summary.probed, outcomes: summary.results.map((item) => item.outcome) },
+        )
     }
     {
         // 剔除不支持：off 已跑通、low 被判参数不正确 ⇒ low 判「不支持」并**从原有档位里剔掉**。
@@ -247,15 +411,25 @@ export async function run(): Promise<void> {
         )
     }
     {
-        // provider 级失败短路整组：该组剩余条数一条都不发，被短路的模型不产生可用结论
+        // 渠道级失败后不再派发新请求：已在途的并行模型请求可完成，未派发的条目合并成一帧
         const ctx = ctxOf()
+        const frames: VerifyProgressFrame[] = []
         const { llm, calls } = stub({ 'm1@minimal': [finishError('TRANSPORT')] })
-        const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1'), target('acme', 'm2', true)] })
+        const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1'), target('acme', 'm2', true)] }, { onProgress: (frame) => { frames.push(frame) } })
         check(
-            '端点不可达短路整组：只发第一条、skipped 为组内剩余、blockedBy 为 unreachable',
-            calls.length === 1 && summary.probed === 1 && summary.planned === 13
+            '端点不可达后停止派发：并行的另一个模型请求可能已在途，blockedBy 为 unreachable',
+            calls.length >= 2 && calls.length <= 3 && summary.probed === calls.length && summary.planned === 13
             && summary.providers[0].blockedBy === 'unreachable' && !summary.providers[0].reachable,
             { calls, report: summary.providers[0] },
+        )
+        check('因端点不可达而跳过的未派发请求明确带上跳过原因，而不是伪装成用户中止', frames.some((frame) => frame.type === 'probed' && frame.skippedReason === 'unreachable' && (frame.skipped ?? 0) > 0), frames.filter((frame) => frame.type === 'probed'))
+        const unreachableSkips = probedFramesOf(frames).filter((frame) => frame.skippedReason === 'unreachable')
+        check(
+            '渠道级短路：未派发条目合并为一帧，done 追平 total',
+            unreachableSkips.length === 1
+            && (unreachableSkips[0]?.skipped ?? 0) === summary.planned - summary.probed
+            && probedFramesOf(frames).at(-1)?.done === summary.planned,
+            { skips: unreachableSkips, planned: summary.planned, probed: summary.probed, frames },
         )
         // 两个模型都没跑完 ⇒ 原样还原预声明之前的档位表（m1 无字段、m2 回到 off+high）
         check(
@@ -270,15 +444,17 @@ export async function run(): Promise<void> {
         // 本组首个请求就超时：成因在请求之外——url 不可达、端点服务中断、本地网络不通，
         // 再逐条等下去只是把同样的 30 秒乘上几十遍，故短整组（本功能没有基线，首个请求就是该模型的第一档）
         const ctx = ctxOf()
+        const frames: VerifyProgressFrame[] = []
         const { llm, calls } = stub({ 'm1@minimal': [finishError('TIMEOUT')] })
-        const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1'), target('acme', 'm2', true)] })
+        const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1'), target('acme', 'm2', true)] }, { onProgress: (frame) => { frames.push(frame) } })
         check(
-            '首个请求超时短整组：只发第一条、blockedBy 记 timeout',
-            calls.length === 1 && summary.probed === 1 && summary.planned === 13
+            '首个发出的请求超时后停止继续派发（已在途请求会收尾），blockedBy 记 timeout',
+            calls.length >= 2 && calls.length <= 3 && summary.probed === calls.length && summary.planned === 13
             // 理由记「超时」而非「不可达」，reachable 也不翻假：超时只是没等到受理，不是传输层失败的证据
             && summary.providers[0].blockedBy === 'timeout' && summary.providers[0].reachable,
             { calls, report: summary.providers[0] },
         )
+        check('因提供方级超时而跳过的未派发请求保留 timeout 原因', frames.some((frame) => frame.type === 'probed' && frame.skippedReason === 'timeout' && (frame.skipped ?? 0) > 0), frames.filter((frame) => frame.type === 'probed'))
         check(
             '首个超时的两个模型都算没跑完：原样还原（m1 无字段、m2 回到预声明之前的两档）',
             effortsOf(ctx, 'acme', 'm1') === undefined
@@ -328,14 +504,21 @@ export async function run(): Promise<void> {
         // 上游自己报 ABORTED 而我们并未中止：不入账但不短档位尾，后面照探；
         // 少了这一条即 probed < planned，该模型被既有「没跑满即还原」挡住，半截结论不写回
         const ctx = ctxOf()
+        const frames: VerifyProgressFrame[] = []
         const { llm, calls } = stub({ 'm1@low': finishAborted() })
-        const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1')] })
+        const summary = await probeAndFill(ctx as unknown as Context, llm, { models: [target('acme', 'm1')] }, {
+            onProgress: (frame) => { frames.push(frame) },
+        })
+        const probedFrames = frames.filter((frame) => frame.type === 'probed')
         check(
-            '上游中止不入账但不短档位尾：后续档位照探，且该模型按「没跑满」还原',
+            '上游中止不入结果、不短档位尾，但进度结算完整；该模型仍按「没跑满」还原',
             calls.length === 6 && summary.results.every((item) => item.outcome !== 'aborted')
             && summary.usableEfforts.every((item) => item.effort !== 'low')
-            && effortsOf(ctx, 'acme', 'm1') === undefined && summary.fill?.models === 0,
-            { calls, results: summary.results, efforts: effortsOf(ctx, 'acme', 'm1'), fill: summary.fill },
+            && effortsOf(ctx, 'acme', 'm1') === undefined && summary.fill?.models === 0
+            && probedFrames.length === 6 && probedFrames.some((frame) => frame.outcome === 'aborted')
+            && probedFrames.at(-1)?.type === 'probed' && probedFrames.at(-1)?.done === 6
+            && frames.at(-1)?.type === 'done',
+            { calls, probedFrames, results: summary.results, efforts: effortsOf(ctx, 'acme', 'm1'), fill: summary.fill },
         )
     }
     {

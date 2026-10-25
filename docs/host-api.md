@@ -201,7 +201,7 @@
 | `@deepseek-ai/dsh-settings/types` | `SettingsPathOpView` | type-only | `src/client/scope.ts`（浏览器半写回 op 目标形态；**只引 `/types` 子路径**，包根未导出） |
 | `@deepseek-ai/dsh-util-values` | `deepEqualJson`（值）、`JsonValue`（type-only） | **值导入** + type-only | `src/fix.ts` `src/migrate.ts` `src/compat.ts` `src/restore.ts`（前者）；`src/client/scope.ts`（后者） |
 | `@deepseek-ai/dsh-llm` | `LlmRuntime`、`ReasoningEffortId` | type-only | `src/probe-engine.ts`；`src/rpc.ts` 另有合并导入（`ctx.llm` 服务面） |
-| `@deepseek-ai/dsh-llm/types` | `LlmFailure` | type-only | `src/probe-verdict.ts`、`src/probe-engine.ts`（**只在 `/types` 子路径**，包根未再导出） |
+| `@deepseek-ai/dsh-llm/types` | `LlmFailure`、`StreamChunk` | type-only | `src/probe-verdict.ts`、`src/probe-engine.ts`（**只在 `/types` 子路径**，包根未再导出） |
 | `@deepseek-ai/dsh-client-connection` | `ConnectionRpcResult`、`HostConnectionService` | type-only | `src/rpc.ts`、`src/rpc-route.ts`、`src/client/rpc-carrier.ts`、`src/client/card.tsx` |
 | `@deepseek-ai/dsh-host-webserver` | `WebServer` | type-only | `src/rpc.ts` |
 | `@deepseek-ai/dsh-credentials` | `credentialRef`、`isCredentialRefName`（**值导入**）、`CredentialProvider`（type-only） | **值导入** + type-only | `src/official-filter.ts`。本仓第一个 Node 半宿主值导入：Node 半不受浏览器半基线门禁约束，但实现必须由宿主提供，故打包外置（`tsdown.config.ts` 的 `HOST_EXTERNALS` 同名条目与 Node 半 `deps.neverBundle`） |

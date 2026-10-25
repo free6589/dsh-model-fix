@@ -1,10 +1,10 @@
-import type { ProviderProbeOutcome, UnsupportedEffort, UsableEffort, VerifyProbeResult, VerifyProviderReport, VerifySummary } from '@/shared/verify-progress'
+import type { ProviderProbeSegment, UnsupportedEffort, UsableEffort, VerifyProbeResult, VerifyProviderReport, VerifySummary } from '@/shared/verify-progress'
 
-/** 探测汇报层（纯函数、零 ctx）：把一组结论折成一份汇报，再把各组折成全局汇总；计数口径（可用档位只计带档位的请求、可达与凭据取自全程）最易随改动悄悄漂移，独立成文件便于直接测 */
+/** 探测汇报层（纯函数、零 ctx）：把一段逻辑渠道的结论折成一份汇报，再把各段折成全局汇总；计数口径（可用档位只计带档位的请求、可达与凭据取自全程）最易随改动悄悄漂移，独立成文件便于直接测 */
 
-/** 单组结论 -> 汇报：可用模型按「提供方 / 模型」去重；档位不可用单独计数；可达 / 凭据取自全程。
- * 只认能否定整个提供方的失败（端点不通翻 reachable、凭据无效翻 keyValid，额度耗尽属模型级不翻，见 docs/decisions.md「验证」） */
-export function reportProvider(result: ProviderProbeOutcome): VerifyProviderReport {
+/** 单段（逻辑渠道）结论 -> 汇报：可用模型按「提供方 / 模型」去重；档位不可用单独计数；可达 / 凭据取自该段全程。
+ * 只认能否定整个逻辑渠道的失败（端点不通翻 reachable、凭据无效翻 keyValid，额度耗尽属模型级不翻，见 docs/decisions.md「验证」） */
+export function reportProvider(result: ProviderProbeSegment): VerifyProviderReport {
     const usable = new Set<string>()
     let efforts = 0
     let unsupported = 0

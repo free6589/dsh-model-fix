@@ -22,7 +22,8 @@
 | `src/writeback.ts` | 写回 `llm-pi-ai` 段的统一外壳（计划 → 写回 → 冲突限次重试） |
 | `src/probe-verdict.ts` | 验证与探测共用的判定层（失败分类、两级短路判据） |
 | `src/probe-plan.ts` | 共用的计划层（入参校验、展开、分组、配额） |
-| `src/probe-report.ts` | 共用的汇报层（逐组结论、全局统计） |
+| `src/probe-route.ts` | 聚合器逻辑渠道推导：模型 ID 首段前缀 → 渠道名，供分组、短路与汇总共用 |
+| `src/probe-report.ts` | 共用的汇报层（逐逻辑渠道结论、全局统计） |
 | `src/probe-engine.ts` | 共用执行引擎（单次请求受理判定、并发、进度帧） |
 | `src/verify.ts` | 「验证模型」执行器（只读） |
 | `src/probe.ts` | 「探测档位」执行器：兜底备份 → 预声明 → 逐档探测 → 收敛写回 |
@@ -67,7 +68,7 @@
 ## 数据流
 
 - 段变更按 ns 分流：自有段「自愈 → 填充 → 记忆清理」，llm-pi-ai 段「填充 → 保鲜刷新 → 记忆清理」，入口先判事件流守卫。
-- 记忆三条链：浏览器半 `memory-listener` 管存取；Node 半 `memory.ts` 按宿主全量模型列表做失效清理；两条诊断链路（验证只读 / 探测写回）共用 probe 四层，进度走 SSE。
+- 记忆三条链：浏览器半 `memory-listener` 管存取；Node 半 `memory.ts` 按宿主全量模型列表做失效清理；三条诊断链路（验证只读 / 探测档位写回 / 能力探测）共用 probe 四层，进度走 SSE。
 - 请求期链：`agent/request` 瀑布判定「跟随父智能体」；工具链：`self-tune` 按开关装/卸注入面。两者均不写配置。
 - 只读遮蔽支线：`official-filter` 遮 `listModels`、`effort-name` 遮 `resolveModelInfo`，判定逐次现算，不挂事件。
 

@@ -95,7 +95,7 @@ export const en: Record<CardKey, string> = {
     verifyDeselectAll: 'Deselect all',
     verifyEmpty: 'No models yet. Add models on the Models settings page first.',
     recordsEmpty: 'No records',
-    // Per-line log copy: provider-level failures carry no model/effort (not a per-model issue).
+    // Per-line log copy: route-level failures carry no model/effort (not a per-model issue).
     // Levels are colon-separated rather than slash-separated — model ids themselves contain slashes (e.g. z-ai/glm-5)
     verifyCommand: '[{done} / {total}]',
     verifyLine: '{provider}: {model} [{effort}]: {result}',

@@ -1,6 +1,6 @@
 // 用例覆盖：src/probe-verdict.ts 的失败分类与两级短路判据、src/probe-plan.ts 的请求计划展开（验证每模型一条 /
 // 探测逐档展开 / 入参校验与配额）与按提供方分组、src/probe-report.ts 的逐组汇报与汇总求和，以及 src/verify.ts
-// 带桩跑通的整条执行链（每模型一条请求 + 分组串行 + provider 级短路，含「本组首个请求超时即短整组」
+// 带桩跑通的整条执行链（每模型一条请求 + 分组串行 + 渠道级短路，含「本渠道首个请求超时即短该渠道」
 // 与进度帧的 done 不变量），以及 src/probe-engine.ts 的 probeOnce 超时兜底（软超时发中止信号、宽限期满即硬兜底返回、
 // 命中即返回时中止先于迭代器关闭发出、被放弃的循环不再消费分片也不产未处理拒绝）
 import { verifyModels } from '@/verify'
@@ -236,7 +236,7 @@ export async function run(): Promise<void> {
         dead,
     )
     // 可达但额度耗尽：端点通、凭据没被否——额度多半是按模型设的，否定不了整把 key。
-    // 额度不构成 provider 级短路，故此处不带 blockedBy；出了什么事看 m1 自己的明细条目
+    // 额度不构成 渠道级短路，故此处不带 blockedBy；出了什么事看 m1 自己的明细条目
     const outOfQuota = report([detail('m1', 'usable', 'off'), detail('m1', 'quota', 'high')])
     check(
         'reportProvider 额度耗尽：可达且不否凭据（额度是模型级事实），不算 provider 级失败',
@@ -314,7 +314,7 @@ export async function run(): Promise<void> {
         summarizeProviders([allFailed], []),
     )
 
-    // ---------- verifyModels：带桩跑通整条链，每模型一条请求、逐组串行且 provider 级短路 ----------
+    // ---------- verifyModels：带桩跑通整条链，每模型一条请求、逐组串行且 渠道级短路 ----------
     /** 桩：按「提供方/模型 -> 分片序列」应答，未登记的模型默认成功；记录调用顺序与提示词；`onCall` 供用例在中途触发中止 */
     const stub = (script: Record<string, readonly StreamChunk[]>, onCall?: (callIndex: number) => void) => {
         const calls: string[] = []
@@ -443,6 +443,36 @@ export async function run(): Promise<void> {
         )
     }
     {
+        // 同一真实 provider 下按模型首段分逻辑渠道：freelane 不可达不能短 tokenrhythm / wb。
+        const frames: VerifyProgressFrame[] = []
+        const { llm, calls } = stub({ 'bifrost/freelane/m1': [finishError('TRANSPORT')] })
+        const summary = await verifyModels(llm, {
+            models: [
+                entry('bifrost', 'freelane/m1'),
+                entry('bifrost', 'tokenrhythm/m1'),
+                entry('bifrost', 'freelane/m2'),
+                entry('bifrost', 'wb/cn:model'),
+            ],
+        }, { onProgress: (frame) => { frames.push(frame) } })
+        const freelane = summary.providers.find((report) => report.provider === 'freelane')
+        const tokenrhythm = summary.providers.find((report) => report.provider === 'tokenrhythm')
+        const wb = summary.providers.find((report) => report.provider === 'wb')
+        check(
+            'verifyModels 聚合器渠道隔离：只跳过 freelane，tokenrhythm 与 wb 仍出请求并正常汇总',
+            stable(calls) === stable(['bifrost/freelane/m1', 'bifrost/tokenrhythm/m1', 'bifrost/wb/cn:model'])
+            && freelane !== undefined && freelane.blockedBy === 'unreachable' && freelane.planned === 2 && freelane.probed === 1
+            && tokenrhythm !== undefined && tokenrhythm.blockedBy === undefined && tokenrhythm.probed === 1
+            && wb !== undefined && wb.blockedBy === undefined && wb.probed === 1
+            && summary.planned === 4 && summary.probed === 3,
+            { calls, providers: summary.providers, planned: summary.planned, probed: summary.probed },
+        )
+        check(
+            'verifyModels 被跳过的逻辑渠道帧包含 route 与真实短路原因',
+            frames.some((frame) => frame.type === 'probed' && frame.route === 'freelane' && frame.skippedReason === 'unreachable' && frame.skipped === 1),
+            frames.filter((frame) => frame.type === 'probed'),
+        )
+    }
+    {
         let threw = false
         try {
             await verifyModels(stub({}).llm, { models: [entry('a', 'm', ['turbo'])] })
@@ -494,7 +524,7 @@ export async function run(): Promise<void> {
             onProgress: (frame) => { frames.push(frame) },
         })
         check(
-            'verifyModels provider 级短路那条 probed 带 skipped',
+            'verifyModels 渠道级短路那条 probed 带 skipped',
             calls.length === 1 && stable(frames[1]) === stable({
                 type: 'probed', provider: 'a', model: 'm1', effort: undefined, outcome: 'credential', skipped: 2, done: 3, total: 3,
             }),
@@ -574,12 +604,17 @@ export async function run(): Promise<void> {
         const summary = await verifyModels(llm, { models: [entry('a', 'm1'), entry('a', 'm2')] }, {
             onProgress: (frame) => { frames.push(frame) },
         })
+        const probedFrames = frames.filter((frame) => frame.type === 'probed')
         check(
-            'verifyModels 上游中止不记账但继续验后续模型',
+            'verifyModels 上游中止不入结果但继续验证，进度仍结算至 total',
             calls.length === 2 && summary.probed === 1 && summary.planned === 2 && summary.models === 1
             && stable(summary.results) === stable([
                 { provider: 'a', model: 'm2', effort: undefined, outcome: 'usable', failure: undefined },
-            ]),
+            ])
+            && probedFrames.length === 2
+            && probedFrames[0].type === 'probed' && probedFrames[0].outcome === 'aborted' && probedFrames[0].done === 1
+            && probedFrames[1].type === 'probed' && probedFrames[1].done === 2
+            && frames.at(-1)?.type === 'done',
             { calls, frames, summary },
         )
     }

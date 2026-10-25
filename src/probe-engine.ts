@@ -5,8 +5,8 @@
 
 import type { LlmRuntime, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 // LlmFailure 定义在 types 子路径（包根只 import 未再导出）；仅取类型，擦除后不落运行期依赖
-import type { LlmFailure } from '@deepseek-ai/dsh-llm/types'
-import type { ProviderProbeOutcome, VerifyFailureFacts, VerifyProbe, VerifyProbeResult, VerifyProgressFrame, VerifyProviderReport, VerifySummary } from '@/shared/verify-progress'
+import type { LlmFailure, StreamChunk } from '@deepseek-ai/dsh-llm/types'
+import type { ProviderBlockReason, ProviderProbeOutcome, VerifyFailureFacts, VerifyProbe, VerifyProbeResult, VerifyProgressFrame, VerifyProviderReport, VerifySummary } from '@/shared/verify-progress'
 import type { ProviderProbeGroup } from '@/probe-plan'
 import { reportProvider, summarizeProviders } from '@/probe-report'
 import { classifyFailure, type ProbeVerdict } from '@/probe-verdict'
@@ -20,7 +20,7 @@ const PROBE_TIMEOUT_MS = 30_000
  * 兜底与「读流」赛跑，适配器即使忽略 `signal`，probeOnce 也必然返回（见 docs/decisions.md「验证」）。
  */
 const PROBE_TIMEOUT_GRACE_MS = 3_000
-/** 同时在跑的**提供方**数（单提供方并发恒为 1，由分组串行保证） */
+/** 同时在跑的提供方分组数；组内请求并发由各自的 GroupRunner 决定。 */
 const PROBE_PROVIDER_CONCURRENCY = 5
 
 /** 取失败事实的可序列化子集（供调用方自行细分，不参与本插件的判定） */
@@ -51,22 +51,24 @@ export async function probeOnce(
     const giveUp = new Promise<'give-up'>((resolve) => {
         giveUpTimer = setTimeout(() => resolve('give-up'), timeoutMs + graceMs)
     })
-    const iterator = llm.stream({
-        provider: probe.provider,
-        model: probe.model,
-        // 档位 id 取自宿主配置键（模型页送出的同一个值）；断言只为满足品牌类型，免引入 dsh-llm 运行期值导入
-        ...(probe.effort === undefined ? {} : { reasoningEffort: probe.effort as ReasoningEffortId }),
-        messages: [{ role: 'user', content: [{ type: 'text', text: PROBE_PROMPT }] }],
-        // 我方超时与外部中止合成一路，两者都该停在探测边界上。
-        // 不能改用 AbortSignal.timeout：那会抹掉下面判断「超时的是我」的 timedOut 标志，慢端点又被误判成断线
-        signal: AbortSignal.any([signal, controller.signal]),
-    })[Symbol.asyncIterator]()
+    let iterator: AsyncIterator<StreamChunk> | undefined
     try {
+        // stream() 本身也可能同步抛错；必须放在 try/finally 内，否则整轮探测会失败且超时计时器残留。
+        iterator = llm.stream({
+            provider: probe.provider,
+            model: probe.model,
+            // 档位 id 取自宿主配置键（模型页送出的同一个值）；断言只为满足品牌类型，免引入 dsh-llm 运行期值导入
+            ...(probe.effort === undefined ? {} : { reasoningEffort: probe.effort as ReasoningEffortId }),
+            messages: [{ role: 'user', content: [{ type: 'text', text: PROBE_PROMPT }] }],
+            // 我方超时与外部中止合成一路，两者都该停在探测边界上。
+            // 不能改用 AbortSignal.timeout：那会抹掉下面判断「超时的是我」的 timedOut 标志，慢端点又被误判成断线
+            signal: AbortSignal.any([signal, controller.signal]),
+        })[Symbol.asyncIterator]()
         // 只认 block-start（证明适配器已开始产出内容块）：额度耗尽的 key 也会先来一条 usage（实测踩过，见 docs/decisions.md「验证」）
         while (true) {
             const step = await Promise.race([iterator.next(), giveUp])
             if (step === 'give-up') {
-                // 外部中止优先：用户按的停止不是失败，不能入账、更不能据此短整组
+                // 外部中止优先：用户按的停止不是失败，不能入账、更不能据此短该渠道
                 return signal.aborted ? { outcome: 'aborted', failure: undefined } : { outcome: 'timeout', failure: undefined }
             }
             if (step.done) break
@@ -99,7 +101,7 @@ export async function probeOnce(
         controller.abort()
         // 收尾关闭迭代器。**不 await**：适配器若忽略 signal，`return` 会排在未决的 `next()` 之后永不 settle，
         // await 等于把刚兜底回来的函数又挂回去
-        const close = iterator.return?.bind(iterator)
+        const close = iterator?.return?.bind(iterator)
         if (close !== undefined) void close().catch(() => {})
     }
 }
@@ -113,6 +115,10 @@ interface ProbeFrameProgress {
     settled: number
     /** 因短路而未发出的条数；无则缺省 */
     skipped?: number
+    /** 被渠道级故障短路时，说明未发请求的原因；无则缺省 */
+    skippedReason?: ProviderBlockReason
+    /** 聚合器内由模型 ID 前缀推导的逻辑渠道；只影响展示与分组统计，不改实际请求。 */
+    route?: string
 }
 
 /** 一个 `runGroup` 的产出出口：一条请求的结论 + 该帧的进度交代 */
@@ -139,7 +145,7 @@ export interface ProbeRunOptions {
 }
 
 /**
- * 跑完一组清单（组内零并发、组间最多五路）并汇总；**不发 `done` 帧**——终帧由调用方在收尾时发。
+ * 跑完所有分组（组间最多五路）；组内调度由 GroupRunner 决定。**不发 `done` 帧**——终帧由调用方在收尾时发。
  * 已中止即不再开新组，从未开跑的组保持 undefined、被排除在汇报之外。
  */
 export async function runProbeGroups(
@@ -165,12 +171,14 @@ export async function runProbeGroups(
             outcome: verdict.outcome,
             ...(verdict.cap === undefined ? {} : { cap: verdict.cap }),
             ...(progress.skipped === undefined ? {} : { skipped: progress.skipped }),
+            ...(progress.skippedReason === undefined ? {} : { skippedReason: progress.skippedReason }),
+            ...(progress.route === undefined ? {} : { route: progress.route }),
             done: completed,
             total,
         })
     }
     options.onProgress?.({ type: 'opened', total })
-    // 第 w 个 worker 只跑下标 ≡ w (mod workers) 的组；组内逐条 await 即「同一 provider 零并发」
+    // 第 w 个 worker 只跑下标 ≡ w (mod workers) 的组；组内请求调度由对应 GroupRunner 负责
     const workers = Math.min(PROBE_PROVIDER_CONCURRENCY, groups.length)
     await Promise.all(Array.from({ length: workers }, (_, worker) => (async () => {
         for (let at = worker; at < groups.length; at += workers) {
@@ -183,7 +191,8 @@ export async function runProbeGroups(
     for (let at = 0; at < groups.length; at++) {
         const outcome = outcomes[at]
         if (outcome === undefined) continue
-        reports.push(reportProvider(outcome))
+        // 聚合器探测可给出每个逻辑渠道的报告；实际请求明细仍只合并一次。
+        reports.push(...(outcome.segments ?? [outcome]).map((segment) => reportProvider(segment)))
         details.push(...outcome.results)
     }
     return summarizeProviders(reports, details)

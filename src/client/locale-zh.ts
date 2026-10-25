@@ -93,7 +93,7 @@ export const zh: Record<CardKey, string> = {
     // 分组全选文案照官方「获取可用模型」的 fetchSelectAll / fetchDeselectAll
     verifySelectAll: '全选',
     verifyDeselectAll: '取消全选',
-    // 记录区逐行文案：provider 级失败不带模型与档位（那不是某个模型的问题），只交代整组结论。
+    // 记录区逐行文案：渠道级失败不带模型与档位（那不是某个模型的问题），只交代该渠道结论。
     // 层级一律用冒号而非斜杠分隔——模型 id 本身就含斜杠（如 z-ai/glm-5），拿它当分隔符读不出层级
     verifyCommand: '[{done} / {total}]',
     verifyLine: '{provider}: {model} [{effort}]：{result}',
